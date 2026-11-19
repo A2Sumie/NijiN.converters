@@ -78,6 +78,7 @@ See [`docs/README.md`](docs/README.md) for the complete documentation library, [
 | [`PART2_Z8_AF_AND_EMOUNT_PROTOCOL.md`](docs/ez-reference/PART2_Z8_AF_AND_EMOUNT_PROTOCOL.md) | Nikon Z8 `v3.10`/`v3.12` control plane, `1 kHz` hotline, Sony E-mount protocol, and third-party deltas |
 | [`PART3_EZ_BRIDGE_AND_ERRATA.md`](docs/ez-reference/PART3_EZ_BRIDGE_AND_ERRATA.md) | E-to-Z bridge translation equations, `Known Bad` catalog, and verified errata |
 | [`PART4_PDAF_MATH_AND_CONTROL_OPT.md`](docs/ez-reference/PART4_PDAF_MATH_AND_CONTROL_OPT.md) | Z8 `3.12` rational PDAF solver math, damping/velocity envelopes, M4F opt, and Huffman/spectral codecs |
+| [`PART5_DISTANCE_IBIS_AND_AF_CROSSWALK.md`](docs/ez-reference/PART5_DISTANCE_IBIS_AND_AF_CROSSWALK.md) | Sony E / Nikon Z distance, cam-curve & 5-axis IBIS (`fc_pitch` vs `0xA3`), EXIF `255`/MF bar split, and `0x1D/0x43/0x6B` AF crosswalk |
 | [`Z8_SONY_AF_ARCHITECTURE_STUDY.md`](docs/ez-reference/Z8_SONY_AF_ARCHITECTURE_STUDY.md) | Comparative disassembly study: Z8 `3.12` + S-Line primes vs Sony `A1 II` / `A9 III` |
 | [`SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md`](docs/ez-reference/SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md) | Master ecosystem protocol & control specification + `275`-lens catalog & `57`-spectral appendix |
 | [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](docs/ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md) | `V2.23` (`LF 2.23`) build manifest, full-time closed-loop electronic parfocal, and verification matrix |
@@ -91,7 +92,7 @@ See [`docs/README.md`](docs/README.md) for the complete documentation library, [
 │   ├── README.md         # Master bilingual documentation index
 │   ├── ARCHITECTURE.md
 │   ├── FLASHING_AND_DIAGNOSTICS.md
-│   └── ez-reference/     # 9-volume complete E->Z protocol, optical, AF math & catalog specs
+│   └── ez-reference/     # 10-volume complete E->Z protocol, optical, AF math & catalog specs
 ├── se-nz/
 │   ├── Makefile
 │   ├── include/          # Register defs, shared C17 state structs, lens DB header
@@ -157,6 +158,7 @@ make clean
 | [`PART2_Z8_AF_AND_EMOUNT_PROTOCOL.md`](docs/ez-reference/PART2_Z8_AF_AND_EMOUNT_PROTOCOL.md) | Nikon Z8 `v3.10`/`v3.12` 状态机（`164` 描述符/`600` 属性）、`1 kHz SPI1` 热线与 Sony E 口协议差异 |
 | [`PART3_EZ_BRIDGE_AND_ERRATA.md`](docs/ez-reference/PART3_EZ_BRIDGE_AND_ERRATA.md) | E→Z 桥接方程、全谱系 `Known Bad` 故障目录与机器码反证历史勘误总汇 |
 | [`PART4_PDAF_MATH_AND_CONTROL_OPT.md`](docs/ez-reference/PART4_PDAF_MATH_AND_CONTROL_OPT.md) | Z8 `3.12` 有理式 PDAF 数学拆解、极点诊断、Cortex-M4F 优化与 Canonical Huffman/光谱压缩 |
+| [`PART5_DISTANCE_IBIS_AND_AF_CROSSWALK.md`](docs/ez-reference/PART5_DISTANCE_IBIS_AND_AF_CROSSWALK.md) | Sony E / Nikon Z 全链路距离与倍率、五轴防抖（`fc_pitch` vs `0xA3`）、EXIF `255` 与 MF 标尺分离及三代 AF 指令（`0x1D`/`0x43`/`0x6B`）对照 |
 | [`Z8_SONY_AF_ARCHITECTURE_STUDY.md`](docs/ez-reference/Z8_SONY_AF_ARCHITECTURE_STUDY.md) | Z8 `3.12` + 旗舰定焦与 Sony `A1 II` / `A9 III` 双端对焦架构机器码对比研究 |
 | [`SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md`](docs/ez-reference/SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md) | SE-NZ 工程生态、控制律总规格书暨 `275` 项镜头目录与 `57` 条光谱附录 |
 | [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](docs/ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md) | `V2.23`（`LF 2.23`）构建指纹、全时闭环电子齐焦设计及全套自动化验证台账 |

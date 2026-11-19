@@ -149,10 +149,10 @@
 2. **`ID05` 18 组动态游标解包表**：
    以 `active_mask05 = req_mask05 & u32_le(tx0a_reply[1..4])` 从 `pos = 6`（即 `wire[6]`）起按位依次提取各激活组至固定结构体 `g_id05.grp[0..17]`，各组字节长度固定为：
    `GRP05_LEN[18] = {8, 1, 8, 3, 10, 28, 2, 6, 1, 2, 8, 6, 6, 6, 1, 6, 3, 3}`（前 15 组满掩码 `0x7FFF` 共 `96 B`，全 18 组满掩码 `0x3FFFF` 共 `108 B`）：
-   - `grp[0]` (`8B`)：`+0..1 = u16_le dist_x`（`0xFFFF` 为无穷远，有限值 `x = 384 + 64*log2(D_m)`），`+4..5 = u16_le f_opt_0p1mm`，`+6..7 = u16_le f_nom_0p1mm`；
-   - `grp[2]` (`8B`)：`+0..1 = u16_le P_cur`，`+2..3 = u16_le P_open`，`+4..5 = u16_le P_min`；
-   - `grp[3]` (`3B`)：`+0 = u8 mag_code`（`!= 0xFF` 时 $\beta = 2^{5 - \text{code}/16.0}$）；
-   - `grp[4]` (`10B`)：手动光圈环块，`+0..1 = u16_le P_ring`，`+2.bit0 = manual_ring_active`；
+   - `grp[0]` (`8B`)：`+0..1 = u16_le P_cur`（当前光圈 E 口编码，`256 steps/EV`；全开/最小光圈由 `TX08` 基准叠加 `grp[5]` `Delta_AV` 结算）；
+   - `grp[2]` (`8B`)：`+0..1 = u16_le exit_pupil_raw`（动态出瞳编码）；
+   - `grp[3]` (`3B`)：手动光圈环块，`+0..1 = u16_le P_ring`，`+2.bit0 = manual_ring_active`；
+   - `grp[4]` (`10B`)：`+0..1 = u16_le dist_code_x`（`0xFFFF` 为无穷远，有限值 `x = 384 + 64*log2(D_m)`），`+3 = u8 mag_code`（`!= 0xFF && != 0` 时 $\beta = 2^{5 - \text{code}/16.0}$，原厂写入 EXIF `Sony2Fp.FocusPosition2`），`+4..5 = u16_le f_opt_0p1mm`（呼吸修正光学焦距，`0.1 mm`），`+6..7 = u16_le f_nom_0p1mm`（标称焦距，`0.1 mm`）；
    - `grp[5]` (`28B`)：`+0..1 = s16_le Delta_AV`，`+2..7` = 暗角 6B 核心段，`+8..13` = 畸变 6B 核心段；
    - `grp[7]` (`6B`)：开关按键块，`+0..1` = 对焦环方向/步长，**`+2.bit1` = `AF/MF`（`0`=AF, `1`=MF）**，**`+4.bit3` = `AFL / Focus Set`（映 `L-Fn`）**，**`+4.bit4` = 实体防抖开关（`1`=ON, `0`=OFF）**，`+4.bits[6:5]` = 防抖模式 `1/2/3`；
    - `grp[11..13]` (`3×6B`)：倍率色差选择器与 R/B 双通道 6B 核心段；`grp[15..17]` (`6B+3B+3B`)：暗角/畸变/色差全画幅外圈 3 节点扩展尾段。
@@ -373,9 +373,9 @@
      $$C_{\text{clamped}} = \operatorname{clamp}_{s32}\bigl((int32\_t)\text{base} + \text{signed\_delta},\; C_{\text{open}},\; C_{\text{min}}\bigr), \qquad P = \left\lfloor\frac{4 \cdot C_{\text{clamped}} + 1}{3}\right\rfloor + \text{0x0E00}$$
    - E 线码 `P` $\to$ Z 码 `C`：
      $$C(P) = \text{0x0180} + \bigl((P \gg 8) - \text{0x10}\bigr) \cdot \text{0xC0} + \bigl(((P \mathbin{\&} \text{0xFF}) \cdot \text{0xC0} + 128) \gg 8\bigr)$$
-2. **物理光圈环零冲突双模态**（读取解包槽 `g_id05.grp[4]`）：
-   - **`'A'` 档（`grp[4][2].bit0 == 0`）**：`base = C_open(f)`，`cur_delta = max(0, C_cur - base)`，`max_delta = C_min(f) - C_open(f)`，机身拨盘目标写入 `ID03 wire[9..10]`，`wire[13] = 0x18`；对 `TX07[6] == 1` 的 6 款老腾龙追加 `2F 09 0A` 发 32B，其余全系严格发 **29B `ID03`**；
-   - **手动光圈环档（`grp[4][2].bit0 == 1`）**：取 `P_ring = u16_le(grp[4][0..1])` 闭环写入 `ID03`，同时在 `cmd20/00` 报 **`base = C(P_ring)`、`cur_delta = 0`、`max_delta = 0`**，使机身实时同步环上 F 值测光与记录 EXIF。
+2. **物理光圈环零冲突双模态**（读取解包槽 `g_id05.grp[3]`）：
+   - **`'A'` 档（`grp[3][2].bit0 == 0`）**：`base = C_open(f)`，`cur_delta = max(0, C_cur - base)`，`max_delta = C_min(f) - C_open(f)`，机身拨盘目标写入 `ID03 wire[9..10]`，`wire[13] = 0x18`；对 `TX07[6] == 1` 的 6 款老腾龙追加 `2F 09 0A` 发 32B，其余全系严格发 **29B `ID03`**；
+   - **手动光圈环档（`grp[3][2].bit0 == 1`）**：取 `P_ring = u16_le(grp[3][0..1])` 闭环写入 `ID03`，同时在 `cmd20/00` 报 **`base = C(P_ring)`、`cur_delta = 0`、`max_delta = 0`**，使机身实时同步环上 F 值测光与记录 EXIF。
 
 ---
 
@@ -388,7 +388,7 @@
    - **鱼眼保护**：检测到 `(TX08[0x19] & 0x40) != 0` 时，强制将 `cmd24/00` 的 `54 × f32` 径向畸变系数清零为 `0.0f`；
    - **流式分页保护**：通过 `3A / 3B` 读取未知镜头 `LF` 档案时，在 `SRAM2` `36 KiB` 工作区内执行流式分页解析，兼容任意页数的大容量光学表。
 2. **三级 `A3`（Q2.14 放大倍率）与呼吸焦距修正**：
-   - **Tier 1**：`g_id05.grp[3][0] != 0xFF` 时，按 $\beta = 2^{5 - \text{code}/16.0}$ 实时输出 `A3 = clamp(round(16384 * β), 0, 32768)`；
+   - **Tier 1**：`(g_id05.grp[4][3] != 0xFF) && (g_id05.grp[4][3] != 0)` 时，按 $\beta = 2^{5 - \text{code}/16.0}$ 实时输出 `A3 = clamp(round(16384 * β), 0, 32768)`；
    - **Tier 2**：Sony `dataset 13` 呼吸表双线性插值修正有效焦距 `0xA2` 与近摄 `A3`，或查腾龙已知型号 `43×65` 倍率网格；
    - **Tier 3**：未知镜头按高斯近摄公式计算并施加相位稳定上限 `4915`。
 
