@@ -1,0 +1,21 @@
+# Build outputs & firmware binaries (source-only repository)
+**/build/
+*.PUB
+*.pub
+*.bin
+*.elf
+*.map
+*.o
+*.a
+*.dylib
+*.so
+*.dSYM/
+
+# Tool caches & OS metadata
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.gauntlet/
+.DS_Store
+*.log
