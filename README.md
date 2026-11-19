@@ -66,7 +66,21 @@ All built binaries reside in `se-nz/build/` (`BORYOZA_V223.PUB` is bounded stric
    python3 se-nz/tools/dump_usb_blackbox.py --out telemetry.json
    ```
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/FLASHING_AND_DIAGNOSTICS.md`](docs/FLASHING_AND_DIAGNOSTICS.md) for memory maps, static gates, and field tooling usage.
+See [`docs/README.md`](docs/README.md) for the complete documentation library, [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for memory maps & static gates, and [`docs/FLASHING_AND_DIAGNOSTICS.md`](docs/FLASHING_AND_DIAGNOSTICS.md) for USB MSC flashing & telemetry usage.
+
+#### Complete E→Z Engineering Reference ([`docs/ez-reference/`](docs/ez-reference/))
+
+| Volume | Topic |
+|---|---|
+| [`HC32F460_SE_NZ_DESIGN_SPEC.md`](docs/ez-reference/HC32F460_SE_NZ_DESIGN_SPEC.md) | `HC32F460JEUA` clean-room firmware design (clocks, DMA, E/Z wire frames, AF/VR/aperture/optics) |
+| [`BOOTLOADER_AND_USB_MSC_CONTRACT.md`](docs/ez-reference/BOOTLOADER_AND_USB_MSC_CONTRACT.md) | Stock `64 KiB` Bootloader ABI, `PA9` boot mux, `13`-pin role matrix, and FAT12 MSC writer |
+| [`PART1_NIKKOR_Z_FLEET.md`](docs/ez-reference/PART1_NIKKOR_Z_FLEET.md) | Native Nikkor Z RXv2 fleet architecture (`24` firmware packages / `21` lens models) |
+| [`PART2_Z8_AF_AND_EMOUNT_PROTOCOL.md`](docs/ez-reference/PART2_Z8_AF_AND_EMOUNT_PROTOCOL.md) | Nikon Z8 `v3.10`/`v3.12` control plane, `1 kHz` hotline, Sony E-mount protocol, and third-party deltas |
+| [`PART3_EZ_BRIDGE_AND_ERRATA.md`](docs/ez-reference/PART3_EZ_BRIDGE_AND_ERRATA.md) | E-to-Z bridge translation equations, `Known Bad` catalog, and verified errata |
+| [`PART4_PDAF_MATH_AND_CONTROL_OPT.md`](docs/ez-reference/PART4_PDAF_MATH_AND_CONTROL_OPT.md) | Z8 `3.12` rational PDAF solver math, damping/velocity envelopes, M4F opt, and Huffman/spectral codecs |
+| [`Z8_SONY_AF_ARCHITECTURE_STUDY.md`](docs/ez-reference/Z8_SONY_AF_ARCHITECTURE_STUDY.md) | Comparative disassembly study: Z8 `3.12` + S-Line primes vs Sony `A1 II` / `A9 III` |
+| [`SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md`](docs/ez-reference/SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md) | Master ecosystem protocol & control specification + `275`-lens catalog & `57`-spectral appendix |
+| [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](docs/ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md) | `V2.23` (`LF 2.23`) build manifest, full-time closed-loop electronic parfocal, and verification matrix |
 
 ### Repository Layout
 
@@ -74,8 +88,10 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/FLASHING_AND_DIAGN
 .
 ├── assets/lockup/nijin-lockup-transparent.svg
 ├── docs/
+│   ├── README.md         # Master bilingual documentation index
 │   ├── ARCHITECTURE.md
-│   └── FLASHING_AND_DIAGNOSTICS.md
+│   ├── FLASHING_AND_DIAGNOSTICS.md
+│   └── ez-reference/     # 9-volume complete E->Z protocol, optical, AF math & catalog specs
 ├── se-nz/
 │   ├── Makefile
 │   ├── include/          # Register defs, shared C17 state structs, lens DB header
@@ -129,4 +145,18 @@ make clean
 
 构建产物统一生成在 `se-nz/build/` 下；固件体积严格受硬件 APP Flash 分区 `[0x00010000, 0x00060000)`（`320 KiB = 327,680 B`，`program_end <= 0x00060000`）物理边界约束。
 
-更多架构细节、分区映射、USB MSC 连续簇刷写及免提权日志读取步骤，请参阅 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 与 [`docs/FLASHING_AND_DIAGNOSTICS.md`](docs/FLASHING_AND_DIAGNOSTICS.md)。
+更多架构细节、分区映射、USB MSC 连续簇刷写及免提权日志读取步骤，请参阅 [`docs/README.md`](docs/README.md)、[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 与 [`docs/FLASHING_AND_DIAGNOSTICS.md`](docs/FLASHING_AND_DIAGNOSTICS.md)。
+
+#### 完整 E→Z 实现与协议参考文库（[`docs/ez-reference/`](docs/ez-reference/)）
+
+| 文档 | 内容范围 |
+|---|---|
+| [`HC32F460_SE_NZ_DESIGN_SPEC.md`](docs/ez-reference/HC32F460_SE_NZ_DESIGN_SPEC.md) | `HC32F460JEUA` E→Z 净室固件完整工程设计规格书（时钟、DMA、双侧线协议与四大核心业务域） |
+| [`BOOTLOADER_AND_USB_MSC_CONTRACT.md`](docs/ez-reference/BOOTLOADER_AND_USB_MSC_CONTRACT.md) | 原厂 `64 KiB` Bootloader 交接合同、`PA9` 启动分支、QFN48 管脚归属与 USB MSC FAT12 状态机 |
+| [`PART1_NIKKOR_Z_FLEET.md`](docs/ez-reference/PART1_NIKKOR_Z_FLEET.md) | Nikkor Z 原厂 RXv2 镜头固件家族架构（`24` 份解包固件 / `21` 款镜头） |
+| [`PART2_Z8_AF_AND_EMOUNT_PROTOCOL.md`](docs/ez-reference/PART2_Z8_AF_AND_EMOUNT_PROTOCOL.md) | Nikon Z8 `v3.10`/`v3.12` 状态机（`164` 描述符/`600` 属性）、`1 kHz SPI1` 热线与 Sony E 口协议差异 |
+| [`PART3_EZ_BRIDGE_AND_ERRATA.md`](docs/ez-reference/PART3_EZ_BRIDGE_AND_ERRATA.md) | E→Z 桥接方程、全谱系 `Known Bad` 故障目录与机器码反证历史勘误总汇 |
+| [`PART4_PDAF_MATH_AND_CONTROL_OPT.md`](docs/ez-reference/PART4_PDAF_MATH_AND_CONTROL_OPT.md) | Z8 `3.12` 有理式 PDAF 数学拆解、极点诊断、Cortex-M4F 优化与 Canonical Huffman/光谱压缩 |
+| [`Z8_SONY_AF_ARCHITECTURE_STUDY.md`](docs/ez-reference/Z8_SONY_AF_ARCHITECTURE_STUDY.md) | Z8 `3.12` + 旗舰定焦与 Sony `A1 II` / `A9 III` 双端对焦架构机器码对比研究 |
+| [`SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md`](docs/ez-reference/SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md) | SE-NZ 工程生态、控制律总规格书暨 `275` 项镜头目录与 `57` 条光谱附录 |
+| [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](docs/ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md) | `V2.23`（`LF 2.23`）构建指纹、全时闭环电子齐焦设计及全套自动化验证台账 |

@@ -47,3 +47,13 @@
 | `pack_pub.py` | Verifies `.PUB` container (`PRODUCTVER:1.001`), `.readme_ver` at `0x11000`, `MSP == 0x1FFFFF00`, `Reset_Handler` Thumb entry, `program_end <= 0x00060000`, zero secondary `PRODUCTVER:1.001` collisions on `512 B` sector boundaries, **0 VFP instructions** in `.ramfunc` / IRQ handlers / HAL / transport, and **0 Flash leaks** in RAM ISR & EFM call closures. |
 | `check_source_comments.py` | Enforces clean technical vocabulary in all C/H/S/LD comments (`src/`, `include/`, `ld/`). |
 | `arm-none-eabi-nm -u` | Confirms empty undefined symbol table (`0` `__aeabi_uldivmod` / `__aeabi_ldivmod` / `__udivmoddi4` helpers). |
+
+---
+
+## 4. Complete E→Z Reference Documentation / 深入实现文档
+
+- Master Documentation Index: [`docs/README.md`](README.md)
+- MCU Hardware & Firmware Design Specification: [`HC32F460_SE_NZ_DESIGN_SPEC.md`](ez-reference/HC32F460_SE_NZ_DESIGN_SPEC.md)
+- Bootloader, Pin Roles & USB MSC Contract: [`BOOTLOADER_AND_USB_MSC_CONTRACT.md`](ez-reference/BOOTLOADER_AND_USB_MSC_CONTRACT.md)
+- Z-Mount, E-Mount & PDAF Math Library: [`PART1_NIKKOR_Z_FLEET.md`](ez-reference/PART1_NIKKOR_Z_FLEET.md), [`PART2_Z8_AF_AND_EMOUNT_PROTOCOL.md`](ez-reference/PART2_Z8_AF_AND_EMOUNT_PROTOCOL.md), [`PART3_EZ_BRIDGE_AND_ERRATA.md`](ez-reference/PART3_EZ_BRIDGE_AND_ERRATA.md), [`PART4_PDAF_MATH_AND_CONTROL_OPT.md`](ez-reference/PART4_PDAF_MATH_AND_CONTROL_OPT.md)
+- Ecosystem Catalog (`275` Lenses / `57` Spectral Curves) & V2.23 Parfocal Verification: [`SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md`](ez-reference/SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md), [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md)
