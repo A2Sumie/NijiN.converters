@@ -84,4 +84,5 @@ python3 se-nz/tools/decode_blackbox.py --image flash_or_disk.bin --mode auto --o
 - Complete Documentation Index: [`docs/README.md`](README.md)
 - Stock Bootloader Handoff, `PA9` Mux & FAT12 Writer (`0x5070`) State Machine: [`BOOTLOADER_AND_USB_MSC_CONTRACT.md`](ez-reference/BOOTLOADER_AND_USB_MSC_CONTRACT.md)
 - `HC32F460JEUA` Clean-Room Hardware & Partition Design: [`HC32F460_SE_NZ_DESIGN_SPEC.md`](ez-reference/HC32F460_SE_NZ_DESIGN_SPEC.md)
-- V2.23 Build Fingerprint, Blackbox Schema & Full Verification Matrix: [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md)
+- V2.24 Build Fingerprint, Blackbox Schema, Field Telemetry & Known Limitations: [`SE_NZ_V224_VERIFICATION_AND_LIMITATIONS.md`](ez-reference/SE_NZ_V224_VERIFICATION_AND_LIMITATIONS.md)
+- Historical V2.23 Parfocal Verification Archive: [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md)

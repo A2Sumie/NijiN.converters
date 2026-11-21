@@ -32,6 +32,15 @@ Clean-room C17 embedded firmware and host verification tooling for electronic le
 - **On-Board Optical & Spectral Engine**: Includes `276` lens catalog entries, `58` delta-nibble compressed 81-point spectral transmission curves, `92` sparse/Huffman-compressed 3D `CMD 0x24` A/B optical profiles decompressed on the fly into `SRAM2`, plus live `ID 0x05` curve decoding for supported fixed-focal lenses.
 - **Fail-Safe Field Diagnostics**: Dual-bank `8 KiB` `Ping/Pong` atomic parameter journal (`JNL_PONG` `0x78000` + `JNL_A` `0x7C000`, plus read-only legacy `JNL_B` `0x7E000`) with `FX/DX` LRU state, `256 × 32 B` `CRC32` ring blackbox (`0x7A000..0x7BFFF`) with wear-out circuit breakers, `4 KiB` `Ret_SRAM` warm-restart cache, `PA0` zero-backfeed `0V` sleep/POR wake recovery, and contiguous FAT12 USB MSC flashing (`se-nz/tools/flash_usb_bor.py`).
 
+### Known Limitations (`se-nz/` V2.24)
+
+- **Continuous AF (`AF-C` / `3D-Tracking`) During Rapid Zooming**: Rapidly turning the mechanical zoom ring while actively tracking (`0xE4`/`0xE6`/`0xEE`) shifts cam limits, exit pupil geometry, and defocus sensitivity (`KZ`) asynchronously (`30–60 Hz` internal zoom ADC rate vs `60/120 Hz` VSync); transient tracking lag or brief defocus can occur mid-zoom until the zoom barrel settles.
+- **Idle Electronic Parfocal Off by Default**: Unsolicited `0x1D` focus trims during idle zoom sweeps are disabled in default production builds (`parfocal_research_enable = 0`) to eliminate `1/64`-octave `dist_code_x` step hunting on floating-group zooms; re-trigger AF after zooming, or opt in via `af_servo_set_parfocal_research_mode()` in research/SIL builds.
+- **Sony First-Party XD Lenses Operate at `1.5 Mbps + 60 Hz` VSync**: Sony GM/G lenses such as `FE 50-150mm F2 GM` (`0x807B`) report `tx08[0x0C] = 0x12` (`60 Hz`) unless the body completes the extended `CMD 0x01 / 0x4E / 0x4C / 0x4B / 0x0B / 0x0A` + `ID 0x04[6]` high-rate session; V2.24 locks them to rock-solid `1.5 Mbps + 60 Hz` (`0` stalls, `0` zoom disconnects), while `tx08[0x0C]` bit-7 third-party lenses (`Sigma HLA`, `Tamron VXD`, `Viltrox`) run at `120 Hz` on EXPEED 7 bodies.
+- **Stacked Smart Adapters Unsupported**: Daisy-chaining secondary electronic mount bridges (such as Nikon F → Sony E `LA-FE1`, `0x6006`) exceeds the E-mount cold-boot handshake window (`80–250 ms` secondary MCU init) and falls back to passive mode; connect E-mount lenses directly.
+- **Nikon Z Teleconverters & Dedicated Power-Zoom (`PZ`)**: Z-mount `TC-1.4x`/`TC-2.0x` physically conflict with E-to-Z adapters (Sony E-mount `SEL14TC`/`SEL20TC` on compatible E telephotos are supported), and dedicated `PZ` rocker speed commands are out of scope.
+- **APP Flash Headroom**: `BORYOZA_V224.PUB` uses `297,872 B` / `327,680 B` (`90.9%`) of the `[0x00010000, 0x00060000)` APP partition (`~29.1 KiB` remaining).
+
 ### Quick Start (`se-nz`)
 
 #### Prerequisites
@@ -80,8 +89,9 @@ See [`docs/README.md`](docs/README.md) for the complete documentation library, [
 | [`PART4_PDAF_MATH_AND_CONTROL_OPT.md`](docs/ez-reference/PART4_PDAF_MATH_AND_CONTROL_OPT.md) | Z8 `3.12` rational PDAF solver math, damping/velocity envelopes, M4F opt, and Huffman/spectral codecs |
 | [`PART5_DISTANCE_IBIS_AND_AF_CROSSWALK.md`](docs/ez-reference/PART5_DISTANCE_IBIS_AND_AF_CROSSWALK.md) | Sony E / Nikon Z distance, cam-curve & 5-axis IBIS (`fc_pitch` vs `0xA3`), EXIF `255`/MF bar split, and `0x1D/0x43/0x6B` AF crosswalk |
 | [`Z8_SONY_AF_ARCHITECTURE_STUDY.md`](docs/ez-reference/Z8_SONY_AF_ARCHITECTURE_STUDY.md) | Comparative disassembly study: Z8 `3.12` + S-Line primes vs Sony `A1 II` / `A9 III` |
-| [`SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md`](docs/ez-reference/SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md) | Master ecosystem protocol & control specification + `275`-lens catalog & `57`-spectral appendix |
-| [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](docs/ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md) | `V2.23` (`LF 2.23`) build manifest, full-time closed-loop electronic parfocal, and verification matrix |
+| [`SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md`](docs/ez-reference/SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md) | Master ecosystem protocol & control specification + lens catalog & spectral appendix |
+| [`SE_NZ_V224_VERIFICATION_AND_LIMITATIONS.md`](docs/ez-reference/SE_NZ_V224_VERIFICATION_AND_LIMITATIONS.md) | `V2.24` (`LF 2.24` / `18020b1a`) build manifest, EXPEED 6/7 & multi-brand updates, field verification, and known limitations |
+| [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](docs/ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md) | Historical `V2.23` (`LF 2.23`) parfocal experiment & verification archive |
 
 ### Repository Layout
 
@@ -92,7 +102,7 @@ See [`docs/README.md`](docs/README.md) for the complete documentation library, [
 │   ├── README.md         # Master bilingual documentation index
 │   ├── ARCHITECTURE.md
 │   ├── FLASHING_AND_DIAGNOSTICS.md
-│   └── ez-reference/     # 10-volume complete E->Z protocol, optical, AF math & catalog specs
+│   └── ez-reference/     # 11-volume complete E->Z protocol, optical, AF math & catalog specs
 ├── se-nz/
 │   ├── Makefile
 │   ├── include/          # Register defs, shared C17 state structs, lens DB header
@@ -131,6 +141,15 @@ See [`docs/README.md`](docs/README.md) for the complete documentation library, [
 - **片上压缩光学与光谱引擎**：内置 `276` 项镜头识别目录、`58` 条 81 点光谱透过率曲线、`92` 组稀疏/Huffman 压缩 `CMD 0x24` A+B 三维光学校正表（运行期双缓冲解压至 `SRAM2`），并支持实时 `ID 0x05` 曲线解码。
 - **掉电安全与现场黑匣子诊断**：配备 `Ping/Pong` 双扇区 `128 B` 原子参数日志（`JNL_PONG` `0x78000` + `JNL_A` `0x7C000`，兼容只读历史 `JNL_B` `0x7E000`）与 `FX/DX` LRU 记忆、`256 × 32 B` `CRC32` 飞行黑匣子（`0x7A000..0x7BFFF`）与坏块熔断保护、`4 KiB` `Ret_SRAM` 热启动缓存、`PA0` 零倒灌关机与 `PA9=1` POR 唤醒恢复，以及连续簇 FAT12 USB MSC 刷机工具（`se-nz/tools/flash_usb_bor.py`）。
 
+### 已知局限性（`se-nz/` V2.24）
+
+- **快速变焦过程中的连续追焦（变焦 `AF-C` / `3D` 追踪）**：在持续追焦（`0xE4`/`0xE6`/`0xEE`）的同时快速拧动机械变焦环时，镜内凸轮限位、出瞳几何与散焦灵敏度 `KZ` 按 `30–60 Hz` 变焦 ADC 异步跳变，变焦途中会出现短暂追焦滞后或虚焦，变焦停稳后恢复正常跟踪与合焦。
+- **空闲电子齐焦生产默认关闭**：非对焦空闲状态下拧变焦环的自动 `0x1D` 电子齐焦补偿默认关闭（`parfocal_research_enable = 0`），用于消除多组浮动变焦头在 `1/64` 倍频程 `dist_code_x` 量化下的慢拧微步抽动；变焦后请重新触发对焦，或在研究/SIL 构建中显式调用 `af_servo_set_parfocal_research_mode()` 开启。
+- **Sony 原厂 XD 镜头固定运行于 `1.5 Mbps + 60 Hz` VSync**：`FE 50-150mm F2 GM`（`0x807B`）等新一代 Sony 原厂头默认上报 `tx08[0x0C] = 0x12`（`60 Hz`），需完成完整原厂 `CMD 0x01 / 0x4E / 0x4C / 0x4B / 0x0B / 0x0A` + `ID 0x04[6]` 高帧率会话方可切入 `120 Hz` 内部预算；V2.24 将其锁定在稳定的 `1.5 Mbps + 60 Hz`（实测变焦与追焦零掉线、零失步），而具备 `tx08[0x0C]` bit7 标志的副厂高速头（`Sigma HLA`、`Tamron VXD`、`Viltrox`）在 EXPEED 7 机身上正常运行 `120 Hz`。
+- **不支持叠接二级智能转接环**：前端串接第三方电子转接环（如 Nikon F → Sony E 的 `LA-FE1`, `0x6006`）时，二级 MCU 与前端马达冷启动耗时 `80–250 ms` 超出标准 E 口握手窗口并转入被动回退，仅支持直连原生或副厂 E 口镜头。
+- **Z 口增距镜与电动变焦（`PZ`）**：Nikon Z 口 `TC-1.4x`/`TC-2.0x` 前组凸出与转接环物理干涉（兼容长焦 E 口头搭配 Sony E 口 `SEL14TC`/`SEL20TC` 正常识别）；专用 `PZ` 电动变焦拨杆变速控制不在当前范围内。
+- **APP Flash 容量余量**：`BORYOZA_V224.PUB` 占用 `[0x00010000, 0x00060000)` `320 KiB` APP 分区中的 `297,872 B`（`90.9%`），距 `0x00060000` 文件系统边界剩余约 `29.1 KiB`。
+
 ### 快速上手（`se-nz`）
 
 ```sh
@@ -160,5 +179,6 @@ make clean
 | [`PART4_PDAF_MATH_AND_CONTROL_OPT.md`](docs/ez-reference/PART4_PDAF_MATH_AND_CONTROL_OPT.md) | Z8 `3.12` 有理式 PDAF 数学拆解、极点诊断、Cortex-M4F 优化与 Canonical Huffman/光谱压缩 |
 | [`PART5_DISTANCE_IBIS_AND_AF_CROSSWALK.md`](docs/ez-reference/PART5_DISTANCE_IBIS_AND_AF_CROSSWALK.md) | Sony E / Nikon Z 全链路距离与倍率、五轴防抖（`fc_pitch` vs `0xA3`）、EXIF `255` 与 MF 标尺分离及三代 AF 指令（`0x1D`/`0x43`/`0x6B`）对照 |
 | [`Z8_SONY_AF_ARCHITECTURE_STUDY.md`](docs/ez-reference/Z8_SONY_AF_ARCHITECTURE_STUDY.md) | Z8 `3.12` + 旗舰定焦与 Sony `A1 II` / `A9 III` 双端对焦架构机器码对比研究 |
-| [`SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md`](docs/ez-reference/SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md) | SE-NZ 工程生态、控制律总规格书暨 `275` 项镜头目录与 `57` 条光谱附录 |
-| [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](docs/ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md) | `V2.23`（`LF 2.23`）构建指纹、全时闭环电子齐焦设计及全套自动化验证台账 |
+| [`SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md`](docs/ez-reference/SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md) | SE-NZ 工程生态、控制律总规格书暨镜头目录与光谱附录 |
+| [`SE_NZ_V224_VERIFICATION_AND_LIMITATIONS.md`](docs/ez-reference/SE_NZ_V224_VERIFICATION_AND_LIMITATIONS.md) | `V2.24`（`LF 2.24` / `18020b1a`）构建指纹、EXPEED 6/7 与多品牌加固、实机验证与已知局限性 |
+| [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](docs/ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md) | 历史 `V2.23`（`LF 2.23`）电子齐焦实验与验证归档 |

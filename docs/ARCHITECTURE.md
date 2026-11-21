@@ -57,4 +57,5 @@
 - MCU Hardware & Firmware Design Specification: [`HC32F460_SE_NZ_DESIGN_SPEC.md`](ez-reference/HC32F460_SE_NZ_DESIGN_SPEC.md)
 - Bootloader, Pin Roles & USB MSC Contract: [`BOOTLOADER_AND_USB_MSC_CONTRACT.md`](ez-reference/BOOTLOADER_AND_USB_MSC_CONTRACT.md)
 - Z-Mount, E-Mount & PDAF Math Library: [`PART1_NIKKOR_Z_FLEET.md`](ez-reference/PART1_NIKKOR_Z_FLEET.md), [`PART2_Z8_AF_AND_EMOUNT_PROTOCOL.md`](ez-reference/PART2_Z8_AF_AND_EMOUNT_PROTOCOL.md), [`PART3_EZ_BRIDGE_AND_ERRATA.md`](ez-reference/PART3_EZ_BRIDGE_AND_ERRATA.md), [`PART4_PDAF_MATH_AND_CONTROL_OPT.md`](ez-reference/PART4_PDAF_MATH_AND_CONTROL_OPT.md)
-- Ecosystem Catalog (`275` Lenses / `57` Spectral Curves) & V2.23 Parfocal Verification: [`SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md`](ez-reference/SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md), [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md)
+- V2.24 Build Manifest, Field Verification & Known Limitations: [`SE_NZ_V224_VERIFICATION_AND_LIMITATIONS.md`](ez-reference/SE_NZ_V224_VERIFICATION_AND_LIMITATIONS.md)
+- Ecosystem Catalog (`276` Lenses / `58` Spectral Curves / `92` 3D `CMD 0x24` Tables) & Historical V2.23 Archive: [`SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md`](ez-reference/SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md), [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md)

@@ -27,8 +27,9 @@ This directory contains the architecture overviews, flashing guides, and the com
 | [`Z8_SONY_AF_ARCHITECTURE_STUDY.md`](ez-reference/Z8_SONY_AF_ARCHITECTURE_STUDY.md) | Comparative disassembly study of Z8 `3.12` + flagship S-Line primes vs Sony `A1 II`/`A9 III` and large-defocus high-aperture capture dynamics |
 | [`HC32F460_SE_NZ_DESIGN_SPEC.md`](ez-reference/HC32F460_SE_NZ_DESIGN_SPEC.md) | Full `HC32F460JEUA` clean-room firmware engineering design specification (clocks, GPIO pads, DMA, E/Z wire frames, AF/VR/aperture/optics domains, and verification gates) |
 | [`BOOTLOADER_AND_USB_MSC_CONTRACT.md`](ez-reference/BOOTLOADER_AND_USB_MSC_CONTRACT.md) | Stock `64 KiB` Bootloader handoff ABI, `PA9` camera/USB boot mux, QFN48 `13`-pin role transitions, and FAT12 USB MSC continuous-stream writer (`0x5070`) contract |
-| [`SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md`](ez-reference/SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md) | End-to-end SE-NZ hardware/protocol/control-law master specification plus compiled `275`-lens catalog and `57`-curve spectral index (Appendices A–D) |
-| [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md) | `V2.23` (`LF 2.23` / `17020b1a`) build manifest, full-time closed-loop electronic parfocal design (`AF-S`/`AF-C`/`Body MF`/`Barrel MF`), and full SIL/MCU/matrix verification ledger |
+| [`SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md`](ez-reference/SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md) | End-to-end SE-NZ hardware/protocol/control-law master specification plus compiled lens catalog and spectral index (Appendices A–D) |
+| [`SE_NZ_V224_VERIFICATION_AND_LIMITATIONS.md`](ez-reference/SE_NZ_V224_VERIFICATION_AND_LIMITATIONS.md) | `V2.24` (`LF 2.24` / `18020b1a`) build manifest (`99ae5949...`), EXPEED 6/7 & multi-brand hardening, on-camera telemetry, and **Known Limitations** |
+| [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md) | Historical `V2.23` (`LF 2.23` / `17020b1a`) electronic parfocal experiment & verification archive |
 
 ---
 
@@ -53,5 +54,6 @@ This directory contains the architecture overviews, flashing guides, and the com
 | [`Z8_SONY_AF_ARCHITECTURE_STUDY.md`](ez-reference/Z8_SONY_AF_ARCHITECTURE_STUDY.md) | Nikon Z8 `3.12` + 旗舰 S-Line 与 Sony `A1 II`/`A9 III` 双端对焦架构机器码级对比研究 |
 | [`HC32F460_SE_NZ_DESIGN_SPEC.md`](ez-reference/HC32F460_SE_NZ_DESIGN_SPEC.md) | `HC32F460JEUA` E→Z 净室固件完整工程设计规格书（硬件抽象、Z/E 逐字节帧合同、AF/VR/光圈/光学张量四大业务域） |
 | [`BOOTLOADER_AND_USB_MSC_CONTRACT.md`](ez-reference/BOOTLOADER_AND_USB_MSC_CONTRACT.md) | 原厂 `64 KiB` Bootloader 交接合同、`PA9` 启动分支、QFN48 管脚分阶段归属与 USB MSC FAT12 连续扇区写入状态机 |
-| [`SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md`](ez-reference/SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md) | SE-NZ 全生态协议、控制律与机身兼容总规格书（附 `275` 项镜头目录与 `57` 条光谱映射完整附录 A–D） |
-| [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md) | `V2.23`（`LF 2.23` / `17020b1a`）最终构建指纹、全时闭环电子齐焦架构与全套自动化验证台账 |
+| [`SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md`](ez-reference/SE_NZ_ECOSYSTEM_AND_LENS_CATALOG.md) | SE-NZ 全生态协议、控制律与机身兼容总规格书（附镜头目录与光谱映射完整附录 A–D） |
+| [`SE_NZ_V224_VERIFICATION_AND_LIMITATIONS.md`](ez-reference/SE_NZ_V224_VERIFICATION_AND_LIMITATIONS.md) | `V2.24`（`LF 2.24` / `18020b1a`）构建指纹（`99ae5949...`）、EXPEED 6/7 与多品牌加固、上机验证及**已知局限性** |
+| [`SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md`](ez-reference/SE_NZ_V223_VERIFICATION_AND_PARFOCAL.md) | 历史 `V2.23`（`LF 2.23` / `17020b1a`）电子齐焦实验与自动化验证归档 |
