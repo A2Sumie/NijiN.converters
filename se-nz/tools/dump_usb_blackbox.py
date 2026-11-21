@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read and decode BORYOZA Blackbox (LBA 858..873) and Ping/Pong Journal (LBA 874..905) over USB MSC."""
+"""Read and decode BORYOZA Journal Pong (LBA 842..857), Blackbox (LBA 858..873) and JNL_A/B (LBA 874..905) over USB MSC."""
 
 from __future__ import annotations
 
@@ -24,13 +24,15 @@ import decode_blackbox  # noqa: E402
 import flash_usb_bor  # noqa: E402
 
 SECTOR_BYTES = 512
-DIAG_LBA_START = 858
+DIAG_LBA_START = 842
+BB_LBA_START = 858
 BB_SECTORS = 16
 JNL_SECTORS = 16
-TOTAL_DIAG_SECTORS = 48
+TOTAL_DIAG_SECTORS = 64
 JNL_MAGIC = 0x425A4A4E
 JNL_COMMIT = 0x434F4D54
 JNL_SLOT_BYTES = 128
+FX_LRU_MAGIC = 0x46584C52
 
 
 def resolve_bor_device(mount_arg: Path | None) -> tuple[Path, Path, str]:
@@ -48,7 +50,7 @@ def resolve_bor_device(mount_arg: Path | None) -> tuple[Path, Path, str]:
 
 
 def read_diag_tail(dev_path: Path) -> bytes:
-    """Read LBA 858..905 (24,576 bytes) via pure O_RDONLY without privilege escalation."""
+    """Read LBA 842..905 (32,768 bytes) via pure O_RDONLY without privilege escalation."""
     target_len = TOTAL_DIAG_SECTORS * SECTOR_BYTES
     try:
         fd = os.open(str(dev_path), os.O_RDONLY)
@@ -77,20 +79,38 @@ def read_diag_tail(dev_path: Path) -> bytes:
         os.close(fd)
 
 
-def decode_journal_tail(jnl_16k: bytes) -> list[dict[str, Any]]:
-    """Decode both 8KiB Ping/Pong journal sectors (JNL_A and JNL_B)."""
-    if len(jnl_16k) < JNL_SECTORS * 2 * SECTOR_BYTES:
-        raise ValueError(f"Journal tail too short: {len(jnl_16k)} bytes")
+def _decode_fx_lru(reserved_cfg: bytes) -> list[dict[str, Any]]:
+    magic, seq, count, _pad = struct.unpack_from("<IHBB", reserved_cfg, 0)
+    if magic != FX_LRU_MAGIC or count > 8:
+        return []
+    crc_calc = binascii.crc32(reserved_cfg[:72]) & 0xFFFFFFFF
+    crc_stored = struct.unpack_from("<I", reserved_cfg, 72)[0]
+    if crc_calc != crc_stored:
+        return []
+    out: list[dict[str, Any]] = []
+    for idx in range(count):
+        e_lid, f_min, av_x100, fx_en, age = struct.unpack_from("<HHHBB", reserved_cfg, 8 + (idx * 8))
+        out.append({"e_lid": f"0x{e_lid:04X}", "f_min_mm": f_min, "av_x100": av_x100, "fx": fx_en, "age": age, "seq": seq})
+    return out
+
+
+def decode_journal_all(pong_8k: bytes, ab_16k: bytes) -> list[dict[str, Any]]:
+    """Decode all 8KiB journal sectors (JNL_PONG@0x78000, JNL_A@0x7C000, JNL_B@0x7E000)."""
+    sec_bytes = JNL_SECTORS * SECTOR_BYTES
+    if len(pong_8k) < sec_bytes or len(ab_16k) < sec_bytes * 2:
+        raise ValueError("Journal tail too short")
     records: list[dict[str, Any]] = []
-    for name, off_bytes in (("JNL_A", 0), ("JNL_B", JNL_SECTORS * SECTOR_BYTES)):
-        sec = jnl_16k[off_bytes : off_bytes + JNL_SECTORS * SECTOR_BYTES]
-        for slot in range(64):
-            if name == "JNL_B" and slot == 63:
-                continue
+    sectors = (
+        ("JNL_PONG", pong_8k[:sec_bytes], 64),
+        ("JNL_A", ab_16k[:sec_bytes], 64),
+        ("JNL_B", ab_16k[sec_bytes : 2 * sec_bytes], 63),
+    )
+    for name, sec, cap in sectors:
+        for slot in range(cap):
             rec = sec[slot * JNL_SLOT_BYTES : (slot + 1) * JNL_SLOT_BYTES]
             if rec == b"\xff" * JNL_SLOT_BYTES:
                 continue
-            magic, _ver, gen, e_id, z_id, e_inf, e_near, f_mm, av_c, lmf, vr_m = struct.unpack_from(
+            magic, ver, gen, e_id, z_id, e_inf, e_near, f_mm, av_c, lmf, vr_m = struct.unpack_from(
                 "<IIQHHiiHHBB", rec, 0
             )
             crc_s, commit = struct.unpack_from("<II", rec, 120)
@@ -99,6 +119,7 @@ def decode_journal_tail(jnl_16k: bytes) -> list[dict[str, Any]]:
                 {
                     "sector": name,
                     "slot": slot,
+                    "version": f"0x{ver:08X}",
                     "valid": (magic == JNL_MAGIC) and (commit == JNL_COMMIT) and (crc_s == crc_c),
                     "gen": gen,
                     "e_lens_id": f"0x{e_id:04X}",
@@ -109,6 +130,7 @@ def decode_journal_tail(jnl_16k: bytes) -> list[dict[str, Any]]:
                     "last_av_c": f"0x{av_c:04X}",
                     "linear_mf_code": lmf,
                     "vr_last_mode": f"0x{vr_m:02X}",
+                    "fx_lru": _decode_fx_lru(rec[34:120]),
                 }
             )
     return records
@@ -117,9 +139,12 @@ def decode_journal_tail(jnl_16k: bytes) -> list[dict[str, Any]]:
 def dump_telemetry(dev_path: Path, mount_dir: str = "", readme_text: str = "") -> dict[str, Any]:
     """Read and decode Blackbox and Journal sectors from a block device or disk image."""
     tail = read_diag_tail(dev_path)
-    bb_bytes = BB_SECTORS * SECTOR_BYTES
-    blackbox = decode_blackbox.decode_blackbox_region(tail[:bb_bytes])
-    journal = decode_journal_tail(tail[bb_bytes:])
+    sec_bytes = JNL_SECTORS * SECTOR_BYTES
+    pong_8k = tail[:sec_bytes]
+    bb_8k = tail[sec_bytes : 2 * sec_bytes]
+    ab_16k = tail[2 * sec_bytes :]
+    blackbox = decode_blackbox.decode_blackbox_region(bb_8k)
+    journal = decode_journal_all(pong_8k, ab_16k)
     return {
         "device": str(dev_path),
         "mount_dir": mount_dir,
@@ -145,8 +170,8 @@ def _pack_jnl_record(gen: int, e_id: int, z_id: int, e_inf: int, e_near: int, f_
 def run_selftest() -> int:
     """Validate synthetic 906-LBA disk image decoding end-to-end."""
     disk = bytearray(b"\xff" * (906 * SECTOR_BYTES))
-    bb_off = DIAG_LBA_START * SECTOR_BYTES
-    jnl_a_off = (DIAG_LBA_START + BB_SECTORS) * SECTOR_BYTES
+    bb_off = BB_LBA_START * SECTOR_BYTES
+    jnl_a_off = (BB_LBA_START + BB_SECTORS) * SECTOR_BYTES
     disk[bb_off : bb_off + 32] = _pack_bb_record(1000, 0x0001, 0x807B, 1, 2, 3, 4)
     disk[bb_off + 32 : bb_off + 64] = _pack_bb_record(2000, 0x0004, 0x807B, 0x807B, 120, 0, 0)
     disk[jnl_a_off : jnl_a_off + JNL_SLOT_BYTES] = _pack_jnl_record(7, 0x807B, 0x807B, -120, 4800, 50, 0x0300, 12, 0x02)

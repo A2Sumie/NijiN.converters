@@ -1,4 +1,5 @@
 #include "../include/hc32f460_regs.h"
+#include "../include/boryoza_math_mem.h"
 
 enum {
     LOCAL_ID03_WIRE_CAP = 72,
@@ -19,15 +20,18 @@ static const uint16_t ID03_MAX_60HZ_TKS     = 40500U;      /* 13.50 ms latest la
 static const uint16_t ID04_PHASE_60HZ_TKS   = 27000U;      /* 9.00 ms post-VSync phase for ID04 @ 60Hz */
 static const uint16_t ID04_MAX_60HZ_TKS     = 46500U;      /* 15.50 ms latest launch for ID04 @ 60Hz */
 static const uint64_t ID04_GAP_60HZ_TKS     = 3000ULL;     /* 1.00 ms min gap after ID03 @ 60Hz */
-static const uint16_t ID03_PHASE_120HZ_TKS  = 12000U;      /* 4.00 ms post-VSync phase for ID03 @ 120Hz */
+static const uint16_t ID03_PHASE_120HZ_TKS  = 9000U;       /* 3.00 ms post-VSync phase for ID03 @ 120Hz */
 static const uint16_t ID03_MAX_120HZ_TKS    = 19200U;      /* 6.40 ms latest launch for ID03 @ 120Hz */
-static const uint16_t ID04_PHASE_120HZ_TKS  = 15000U;      /* 5.00 ms post-VSync phase for ID04 @ 120Hz */
+static const uint16_t ID04_PHASE_120HZ_TKS  = 12000U;      /* 4.00 ms post-VSync phase for ID04 @ 120Hz */
 static const uint16_t ID04_MAX_120HZ_TKS    = 22800U;      /* 7.60 ms latest launch for ID04 @ 120Hz */
 static const uint64_t ID04_GAP_120HZ_TKS    = 2400ULL;     /* 0.80 ms min gap after ID03 @ 120Hz */
 static const uint32_t BAUD_750K_INIT        = 750000UL;
 static const uint32_t BAUD_1500K_FAST       = 1500000UL;
 static const uint8_t  VSYNC_60HZ_NOMINAL    = 60U;
 static const uint8_t  VSYNC_120HZ_FAST      = 120U;
+static const uint64_t E_PAIR_LOSS_80MS_TKS  = 240000ULL;
+static const uint8_t  E_PAIR_ERR_STREAK_MAX = 3U;
+static const uint16_t VD_COMMIT_PHASE_MAX_TKS = 3000U;
 static const uint32_t PARK_POST_51_IDLE_TKS = 6000UL;
 static const uint32_t WAKE_GUARD_QUIET_TKS  = 6000UL;
 static const uint64_t PARK_SCK_LOW_TKS      = 4500ULL;
@@ -108,6 +112,19 @@ static void drain_core_diag_to_blackbox(void) {
     }
 }
 
+static int16_t clamp_s32_to_i16(int32_t val) {
+    enum {
+        I16_ABS_MAX = 32767,
+    };
+    if (val > I16_ABS_MAX) {
+        return (int16_t)I16_ABS_MAX;
+    }
+    if (val < -I16_ABS_MAX) {
+        return (int16_t)(-I16_ABS_MAX);
+    }
+    return (int16_t)val;
+}
+
 static void record_session_summary_bb(const loop_tracker_t *trk) {
     uint32_t sum_a0 = ((uint32_t)g_adapter_ctx.diag_af_cmd_count) |
                       ((uint32_t)g_adapter_ctx.diag_af_stall_count << PACK_SHIFT_16);
@@ -133,6 +150,51 @@ static void record_session_summary_bb(const loop_tracker_t *trk) {
                        ((uint32_t)(g_adapter_ctx.ds13_cache_hit & 1U) << PACK_SHIFT_17);
     record_bb4(BB_EVT_PERF_OPTICS, g_adapter_ctx.e_lens_id,
                perf_a0, perf_a1, perf_a2, perf_a3);
+
+    if (g_adapter_ctx.v224.v224_bb_v2_parked_done == 0U) {
+        g_adapter_ctx.v224.v224_bb_v2_parked_done = 1U;
+        v224_trace_counts_t trace_cnt = {0};
+        v224_trace_get_counts(&trace_cnt);
+        uint32_t af_a0 = ((uint32_t)g_adapter_ctx.v224.txn_owner_cmd) |
+                         ((uint32_t)g_adapter_ctx.v224.latched_abort_submode << PACK_SHIFT_8) |
+                         ((uint32_t)g_adapter_ctx.v224.landing_redrive_count << PACK_SHIFT_16) |
+                         ((uint32_t)g_adapter_ctx.v224.cdaf_min_pulse_se << PACK_SHIFT_24);
+        int32_t res_se = g_adapter_ctx.af.target_se - g_adapter_ctx.id06.focus_pos_se;
+        uint32_t af_a1 = ((uint32_t)(uint16_t)clamp_s32_to_i16(res_se)) |
+                         ((uint32_t)g_adapter_ctx.v224.af_stall_abort_total << PACK_SHIFT_16);
+        record_bb4(BB_EVT_V2_AF_SUMMARY, g_adapter_ctx.e_lens_id,
+                   af_a0, af_a1, g_adapter_ctx.v224.txn_seq, (uint32_t)trace_cnt.af_cnt);
+
+        uint32_t pf_a0 = ((uint32_t)(uint16_t)(int16_t)g_adapter_ctx.parfocal_cl_trim_cz) |
+                         ((uint32_t)g_adapter_ctx.v224.parfocal_diverge_count << PACK_SHIFT_16) |
+                         ((uint32_t)g_adapter_ctx.v224.parfocal_fuse_latched << PACK_SHIFT_24);
+        record_bb4(BB_EVT_V2_PF_SUMMARY, g_adapter_ctx.e_lens_id,
+                   pf_a0, (uint32_t)g_adapter_ctx.v224.anchor_x_q8,
+                   (uint32_t)trace_cnt.pf_cnt, (uint32_t)g_adapter_ctx.parfocal_anchor_dist_x);
+
+        static const uint32_t BB_DIST_SUMMARY_TAG_HI = 0x53550000UL;
+        uint32_t ds_a0 = ((uint32_t)g_adapter_ctx.v224.dist_state) |
+                         ((uint32_t)g_adapter_ctx.v224.dist_good_streak << PACK_SHIFT_8) |
+                         ((uint32_t)g_adapter_ctx.dist_report_invalid << PACK_SHIFT_16) |
+                         ((uint32_t)g_adapter_ctx.v224.z_advertise_fx << PACK_SHIFT_24);
+        record_bb4(BB_EVT_V2_DIST_SUMMARY, g_adapter_ctx.e_lens_id,
+                   ds_a0, (uint32_t)g_adapter_ctx.v224.dist_last_raw_x,
+                   BB_DIST_SUMMARY_TAG_HI | (uint32_t)g_adapter_ctx.v224.dist_last_valid_raw_x,
+                   (uint32_t)g_adapter_ctx.ap.z_dist_0x117);
+
+        uint32_t frz_a0 = ((uint32_t)trace_cnt.freeze_cnt) |
+                          ((uint32_t)trace_cnt.freeze_reason << PACK_SHIFT_16) |
+                          ((uint32_t)(uint8_t)trace_cnt.freeze_pre_cnt << PACK_SHIFT_24);
+        record_bb4(BB_EVT_V2_FREEZE_META, g_adapter_ctx.e_lens_id,
+                   frz_a0, g_adapter_ctx.v224.body_cap_flags,
+                   g_adapter_ctx.v224.delivered_opt_gen,
+                   g_adapter_ctx.v224.current_opt_gen);
+
+        record_bb4(BB_EVT_V2_BODY_ID, g_adapter_ctx.e_lens_id,
+                   g_adapter_ctx.v224.body_cap_flags, g_adapter_ctx.v224.delivered_snap_sig,
+                   MASK_U16_LO,
+                   g_adapter_ctx.v224.phase2_tc_opt_gen);
+    }
 }
 
 static bool sample_cold_pa3_mounted(void) {
@@ -427,6 +489,9 @@ static void trigger_z_reattach_pulse(loop_tracker_t *trk) {
     g_adapter_ctx.cmd15_stage = 3U;
     g_adapter_ctx.cmd15_polls = 0U;
     g_adapter_ctx.cmd15_open_ticks = 0ULL;
+    g_adapter_ctx.v224.delivered_snap_sig = 0UL;
+    g_adapter_ctx.v224.delivered_opt_gen = 0UL;
+    z_spi3_slave_clear_provisional_seen();
     z_spi1_hotline_stop();
     z_spi3_slave_stop_and_busy();
     z_spi3_slave_reset_to_wait_sck();
@@ -435,6 +500,48 @@ static void trigger_z_reattach_pulse(loop_tracker_t *trk) {
     trk->z_window_opened = false;
     trk->reopen_active = true;
     trk->detach_ticks = tmra1_now_ticks();
+}
+
+static void promote_aberration_valid_optics_on_expiry(void) {
+    if ((g_adapter_ctx.optics_ready == 0U) && (g_adapter_ctx.id05.aberration_valid != 0U)) {
+        g_adapter_ctx.optics_ready = 1U;
+        uint32_t next_gen = g_adapter_ctx.v224.current_opt_gen + 1UL;
+        g_adapter_ctx.v224.current_opt_gen = (next_gen == 0UL) ? 1UL : next_gen;
+    }
+}
+
+static bool maybe_service_generation_reattach(loop_tracker_t *trk) {
+    bool stale_snap = (bool)((g_adapter_ctx.identity_ready != 0U) &&
+                             (g_adapter_ctx.v224.delivered_snap_sig != 0UL) &&
+                             (g_adapter_ctx.v224.delivered_snap_sig !=
+                              z_snapshot_compute_sig(&g_adapter_ctx)));
+    bool stale_opt = (bool)((g_adapter_ctx.optics_ready != 0U) &&
+                            (g_adapter_ctx.v224.delivered_opt_epoch == g_adapter_ctx.session_epoch) &&
+                            (g_adapter_ctx.v224.delivered_opt_gen != 0UL) &&
+                            (g_adapter_ctx.v224.delivered_opt_gen < g_adapter_ctx.v224.current_opt_gen));
+    if ((!stale_snap) && (!stale_opt)) {
+        return false;
+    }
+    if (g_adapter_ctx.v224.phase2_reattach_tries >= 2U) {
+        return false;
+    }
+    if ((!trk->z_window_opened) || trk->reopen_active ||
+        z_spi3_slave_phase2_busy() || (g_adapter_ctx.af.af_drive_active != 0U)) {
+        trk->pending_optics_reopen = true;
+        return false;
+    }
+    g_adapter_ctx.v224.phase2_reattach_tries =
+        (uint16_t)(g_adapter_ctx.v224.phase2_reattach_tries + 1U);
+    if (g_adapter_ctx.optics_ready != 0U) {
+        optics_disconnect_post_init(&g_adapter_ctx);
+    }
+    lens_session_push_diag(&g_adapter_ctx, BB_EVT_V2_PHASE2_OPT,
+                           g_adapter_ctx.v224.delivered_snap_sig,
+                           z_snapshot_compute_sig(&g_adapter_ctx),
+                           g_adapter_ctx.v224.delivered_opt_gen,
+                           g_adapter_ctx.v224.current_opt_gen);
+    trigger_z_reattach_pulse(trk);
+    return true;
 }
 
 static bool live_optics_ready_or_expired(uint64_t now_ticks) {
@@ -457,12 +564,15 @@ static void on_active_link_up(loop_tracker_t *trk, uint64_t now_ticks) {
     if (g_adapter_ctx.active_vsync_hz != trk->applied_vsync_hz) {
         e_tmra4_vsync_set_rate(g_adapter_ctx.active_vsync_hz);
         trk->applied_vsync_hz = g_adapter_ctx.active_vsync_hz;
+        g_adapter_ctx.v224.rate_epoch += 1UL;
         if (trk->applied_vsync_hz >= VSYNC_120HZ_FAST) {
             uint32_t hz_arg = trk->applied_vsync_hz;
             record_bb(BB_EVT_E_120HZ_ACTIVE, g_adapter_ctx.e_lens_id,
                       &hz_arg, trk->applied_baud, 0U);
         }
     }
+    g_adapter_ctx.v224.link_grace_ticks = now_ticks;
+    g_adapter_ctx.v224.pending_vsync_hz = trk->applied_vsync_hz;
     uint32_t link_a0 = ((uint32_t)g_adapter_ctx.z_primary_lens_id) |
                        ((uint32_t)g_adapter_ctx.lens_family << PACK_SHIFT_16) |
                        ((uint32_t)g_adapter_ctx.af_class << PACK_SHIFT_24);
@@ -477,29 +587,18 @@ static void on_active_link_up(loop_tracker_t *trk, uint64_t now_ticks) {
                link_a0, link_a1, link_a2, link_a3);
     trk->tracked_epoch = g_adapter_ctx.session_epoch;
 
-    /* Re-pulse interface if camera body polled provisional identity or unready optics */
-    if ((!trk->startup_repulse_done) && z_spi3_slave_provisional_identity_seen() &&
-        trk->z_window_opened) {
-        if (live_optics_ready_or_expired(now_ticks)) {
-            trk->startup_repulse_done = true;
-            if ((g_adapter_ctx.optics_ready == 0U) && (g_adapter_ctx.id05.aberration_valid != 0U)) {
-                g_adapter_ctx.optics_ready = 1U;
-            }
-            if (g_adapter_ctx.optics_ready != 0U) {
-                optics_disconnect_post_init(&g_adapter_ctx);
-            }
-            trigger_z_reattach_pulse(trk);
-            return;
-        }
-        trk->pending_optics_reopen = true;
-    } else if (live_optics_ready_or_expired(now_ticks)) {
+    /* Re-pulse interface only when Phase-2 TC delivered an outdated snapshot or optics gen */
+    if (live_optics_ready_or_expired(now_ticks)) {
         trk->startup_repulse_done = true;
-        if ((g_adapter_ctx.optics_ready == 0U) && (g_adapter_ctx.id05.aberration_valid != 0U)) {
-            g_adapter_ctx.optics_ready = 1U;
-        }
+        promote_aberration_valid_optics_on_expiry();
         if (g_adapter_ctx.optics_ready != 0U) {
             optics_disconnect_post_init(&g_adapter_ctx);
         }
+    }
+    if (maybe_service_generation_reattach(trk)) {
+        return;
+    }
+    if ((!trk->reopen_active) && (!trk->pending_optics_reopen)) {
         z_spi3_slave_clear_provisional_seen();
     }
     if (!trk->reopen_active) {
@@ -526,27 +625,118 @@ static bool wait_initial_live_optics(const loop_tracker_t *trk, uint64_t now_tic
 }
 
 static void maybe_finish_startup_repulse(loop_tracker_t *trk, uint64_t now_ticks) {
-    if (trk->startup_repulse_done || (!live_optics_ready_or_expired(now_ticks))) {
-        return;
-    }
-    if ((g_adapter_ctx.optics_ready == 0U) && (g_adapter_ctx.id05.aberration_valid != 0U)) {
-        g_adapter_ctx.optics_ready = 1U;
-    }
-    if (trk->pending_optics_reopen || z_spi3_slave_provisional_identity_seen()) {
-        if (trk->z_window_opened && (g_adapter_ctx.af.af_drive_active == 0U)) {
-            trk->startup_repulse_done = true;
-            if (g_adapter_ctx.optics_ready != 0U) {
-                optics_disconnect_post_init(&g_adapter_ctx);
-            }
-            trigger_z_reattach_pulse(trk);
+    if ((!trk->startup_repulse_done) && live_optics_ready_or_expired(now_ticks)) {
+        trk->startup_repulse_done = true;
+        promote_aberration_valid_optics_on_expiry();
+        if (g_adapter_ctx.optics_ready != 0U) {
+            optics_disconnect_post_init(&g_adapter_ctx);
         }
+    }
+    if ((!maybe_service_generation_reattach(trk)) &&
+        (!trk->pending_optics_reopen) && trk->startup_repulse_done) {
+        z_spi3_slave_clear_provisional_seen();
+    }
+}
+
+static uint8_t scale_frame_counter_hz(uint8_t cur_val, uint8_t old_hz, uint8_t new_hz) {
+    static const uint32_t U8_BYTE_MAX = 0xFFU;
+    if ((cur_val == 0U) || (old_hz == 0U) || (new_hz == 0U) || (old_hz == new_hz)) {
+        return cur_val;
+    }
+    uint32_t scaled = (((uint32_t)cur_val * (uint32_t)new_hz) + ((uint32_t)old_hz - 1U)) /
+                      (uint32_t)old_hz;
+    return (scaled > U8_BYTE_MAX) ? (uint8_t)U8_BYTE_MAX : (uint8_t)scaled;
+}
+
+static void service_vsync_rate_governance(uint64_t now_ticks, loop_tracker_t *trk,
+                                          uint16_t vd_phase_ticks) {
+    if ((g_adapter_ctx.session_state != E_SESSION_ACTIVE) || (!trk->e_link_logged)) {
         return;
     }
-    trk->startup_repulse_done = true;
-    if (g_adapter_ctx.optics_ready != 0U) {
-        optics_disconnect_post_init(&g_adapter_ctx);
+    uint8_t cur_hz = e_tmra4_vsync_current_hz();
+    uint64_t loss_anchor = (g_adapter_ctx.v224.link_grace_ticks > g_adapter_ctx.v224.last_valid_pair_ticks)
+                               ? g_adapter_ctx.v224.link_grace_ticks
+                               : g_adapter_ctx.v224.last_valid_pair_ticks;
+    bool pair_lost = (bool)((g_adapter_ctx.v224.last_valid_pair_ticks == 0ULL) ||
+                            ((now_ticks > loss_anchor) &&
+                             ((now_ticks - loss_anchor) >= E_PAIR_LOSS_80MS_TKS)) ||
+                            (g_adapter_ctx.v224.e_pair_err_streak >= E_PAIR_ERR_STREAK_MAX));
+    if (pair_lost) {
+        g_adapter_ctx.v224.e_feedback_unhealthy = 1U;
+        g_adapter_ctx.v224.unhealthy_settle_streak = 0U;
+        if ((cur_hz >= VSYNC_120HZ_FAST) || (g_adapter_ctx.supports_120hz != 0U)) {
+            g_adapter_ctx.v224.fallback_60hz_latched = 1U;
+        }
+        if ((g_adapter_ctx.af.af_drive_active != 0U) ||
+            (g_adapter_ctx.af.af_cmd_pending != 0U) ||
+            (g_adapter_ctx.af_ext.parfocal_trim_pending != 0U)) {
+            g_adapter_ctx.af.af_stop_req = 1U;
+            g_adapter_ctx.af.af_drive_active = 0U;
+            g_adapter_ctx.af.af_cmd_pending = 0U;
+            g_adapter_ctx.af_ext.parfocal_trim_pending = 0U;
+            g_adapter_ctx.parfocal_cmd_valid = 0U;
+            g_adapter_ctx.v224.drive_ep_start_t256 = 0UL;
+        }
     }
-    z_spi3_slave_clear_provisional_seen();
+
+    bool pair_fresh = (bool)((g_adapter_ctx.v224.last_valid_pair_ticks != 0ULL) &&
+                              (now_ticks >= g_adapter_ctx.v224.last_valid_pair_ticks) &&
+                              ((now_ticks - g_adapter_ctx.v224.last_valid_pair_ticks) <
+                               (E_PAIR_LOSS_80MS_TKS / 2ULL)));
+    bool lens_allows_120 = (bool)((g_adapter_ctx.uart_baud >= BAUD_1500K_FAST) &&
+                                  (g_adapter_ctx.supports_120hz != 0U) &&
+                                  (g_adapter_ctx.v224.fallback_60hz_latched == 0U) &&
+                                  (g_adapter_ctx.v224.e_feedback_unhealthy == 0U) &&
+                                  ((cur_hz >= VSYNC_120HZ_FAST) || pair_fresh));
+    uint8_t desired_hz = lens_allows_120 ? VSYNC_120HZ_FAST : VSYNC_60HZ_NOMINAL;
+    g_adapter_ctx.v224.pending_vsync_hz = desired_hz;
+    if (desired_hz == cur_hz) {
+        return;
+    }
+
+    bool bus_safe = (bool)((vd_phase_ticks <= VD_COMMIT_PHASE_MAX_TKS) &&
+                           (!e_usart1_dma_tx_busy()) &&
+                           (gpio_ph2_high() == 0U) &&
+                           (!z_spi3_slave_phase2_busy()));
+    if (!bus_safe) {
+        return;
+    }
+    bool emergency_fb = (bool)((!trk->id04_pending) &&
+                               (g_adapter_ctx.v224.fallback_60hz_latched != 0U) &&
+                               (desired_hz == VSYNC_60HZ_NOMINAL));
+    bool idle_af = (bool)((!trk->id04_pending) &&
+                          (g_adapter_ctx.af.af_drive_active == 0U) &&
+                          (g_adapter_ctx.af.af_cmd_pending == 0U) &&
+                          (g_adapter_ctx.af.af_stop_req == 0U) &&
+                          (g_adapter_ctx.af.e0_brake_rem == 0U) &&
+                          (g_adapter_ctx.id06.hw_moving == 0U) &&
+                          (g_adapter_ctx.parfocal_hold_vsyncs == 0U) &&
+                          (g_adapter_ctx.af_ext.parfocal_trim_pending == 0U));
+    if ((!idle_af) && (!emergency_fb)) {
+        return;
+    }
+
+    g_adapter_ctx.af.s1_hold_vsyncs =
+        scale_frame_counter_hz(g_adapter_ctx.af.s1_hold_vsyncs, cur_hz, desired_hz);
+    g_adapter_ctx.af.stall_vsyncs =
+        scale_frame_counter_hz(g_adapter_ctx.af.stall_vsyncs, cur_hz, desired_hz);
+    g_adapter_ctx.v224.id04_no_rx06_vsyncs =
+        scale_frame_counter_hz(g_adapter_ctx.v224.id04_no_rx06_vsyncs, cur_hz, desired_hz);
+    g_adapter_ctx.parfocal_cl_cooldown =
+        scale_frame_counter_hz(g_adapter_ctx.parfocal_cl_cooldown, cur_hz, desired_hz);
+    g_adapter_ctx.parfocal_e0_coast_rem =
+        scale_frame_counter_hz(g_adapter_ctx.parfocal_e0_coast_rem, cur_hz, desired_hz);
+    e_tmra4_vsync_set_rate(desired_hz);
+    g_adapter_ctx.active_vsync_hz = desired_hz;
+    trk->applied_vsync_hz = desired_hz;
+    g_adapter_ctx.v224.rate_epoch += 1UL;
+    g_adapter_ctx.v224.e_pair_err_streak = 0U;
+    if (desired_hz >= VSYNC_120HZ_FAST) {
+        uint32_t hz_arg = desired_hz;
+        record_bb(BB_EVT_E_120HZ_ACTIVE, g_adapter_ctx.e_lens_id,
+                  &hz_arg, trk->applied_baud, 0U);
+    }
+    z_snapshot_publish(&g_adapter_ctx, &g_optics_ws);
 }
 
 static bool step_wake_zero_hold(loop_tracker_t *trk, uint64_t now_ticks) {
@@ -595,6 +785,7 @@ static void service_e_handshake_and_link(loop_tracker_t *trk, uint64_t now_ticks
             if (g_adapter_ctx.active_vsync_hz != trk->applied_vsync_hz) {
                 e_tmra4_vsync_set_rate(g_adapter_ctx.active_vsync_hz);
                 trk->applied_vsync_hz = g_adapter_ctx.active_vsync_hz;
+                g_adapter_ctx.v224.rate_epoch += 1UL;
                 if (trk->applied_vsync_hz >= VSYNC_120HZ_FAST) {
                     uint32_t hz_arg = trk->applied_vsync_hz;
                     record_bb(BB_EVT_E_120HZ_ACTIVE, g_adapter_ctx.e_lens_id,
@@ -727,6 +918,8 @@ static void service_park_and_wake(loop_tracker_t *trk, uint64_t now_ticks) {
         lens_session_arm_home_retrigger(&g_adapter_ctx);
         g_adapter_ctx.wake_from_park_req = 0U;
         g_adapter_ctx.wake_rehandshake = 1U;
+        g_adapter_ctx.v224.phase2_reattach_tries = 0U;
+        g_adapter_ctx.v224.v224_bb_v2_parked_done = 0U;
         g_adapter_ctx.hs_cmd07_ok = 0U;
         g_adapter_ctx.hs_tx08_done = 0U;
         g_adapter_ctx.tx_q_head = 0U;
@@ -787,6 +980,9 @@ static void begin_hotplug_attach(loop_tracker_t *trk, uint64_t now_ticks) {
     trk->e_link_logged = false;
     trk->pending_optics_reopen = false;
     trk->startup_repulse_done = false;
+    g_adapter_ctx.v224.delivered_snap_sig = 0UL;
+    g_adapter_ctx.v224.delivered_opt_gen = 0UL;
+    g_adapter_ctx.v224.phase2_reattach_tries = 0U;
     trk->park_committed = false;
     trk->post51_guard_armed = false;
     z_spi3_slave_clear_cmd51_ready();
@@ -824,6 +1020,9 @@ static void begin_hotplug_detach(loop_tracker_t *trk) {
     trk->e_link_logged = false;
     trk->pending_optics_reopen = false;
     trk->startup_repulse_done = false;
+    g_adapter_ctx.v224.delivered_snap_sig = 0UL;
+    g_adapter_ctx.v224.delivered_opt_gen = 0UL;
+    g_adapter_ctx.v224.phase2_reattach_tries = 0U;
     trk->park_committed = false;
     trk->post51_guard_armed = false;
     z_spi3_slave_clear_cmd51_ready();
@@ -938,6 +1137,7 @@ static void service_vsync_id04(loop_tracker_t *trk, uint64_t now_ticks,
         e_usart1_dma_tx_busy() || (gpio_ph2_high() != 0U)) {
         return;
     }
+    af_servo_note_wall_ticks(&g_adapter_ctx, now_ticks);
     af_servo_state_t previous_af = g_adapter_ctx.af;
     af_v218_ext_t previous_ext = g_adapter_ctx.af_ext;
     uint8_t previous_sync = g_adapter_ctx.init_sync_rem;
@@ -959,12 +1159,19 @@ static void service_vsync_id04(loop_tracker_t *trk, uint64_t now_ticks,
     uint16_t previous_stall_cnt = g_adapter_ctx.diag_af_stall_count;
     uint8_t previous_bb_stall = g_adapter_ctx.bb_stall_logged;
     uint8_t previous_diag_head = g_adapter_ctx.core_diag_head;
+    uint8_t previous_diag_tail = g_adapter_ctx.core_diag_tail;
+    bb_event_input_t saved_dq[CORE_DIAG_Q_CAP];
+    memcpy(saved_dq, g_adapter_ctx.core_diag_q, sizeof(saved_dq));
+    uint8_t previous_vsync_hz = g_adapter_ctx.active_vsync_hz;
+    uint8_t prev_v224_raw[sizeof(g_adapter_ctx.v224)];
+    memcpy(prev_v224_raw, &g_adapter_ctx.v224, sizeof(prev_v224_raw));
     uint8_t id04_wire[LOCAL_ID03_WIRE_CAP];
     size_t id04_len = lens_session_build_id04_wire(
         &g_adapter_ctx, id04_wire, g_adapter_ctx.vd_seq_latched);
     if (e_usart1_dma_send_frame(&g_adapter_ctx, now_ticks, id04_wire, (uint16_t)id04_len)) {
         trk->id04_pending = false;
     } else {
+        g_adapter_ctx.active_vsync_hz = previous_vsync_hz;
         g_adapter_ctx.af = previous_af;
         g_adapter_ctx.af_ext = previous_ext;
         g_adapter_ctx.init_sync_rem = previous_sync;
@@ -985,7 +1192,31 @@ static void service_vsync_id04(loop_tracker_t *trk, uint64_t now_ticks,
         g_adapter_ctx.id05_fresh_since_06 = previous_id05_pair;
         g_adapter_ctx.diag_af_stall_count = previous_stall_cnt;
         g_adapter_ctx.bb_stall_logged = previous_bb_stall;
+        if (g_adapter_ctx.core_diag_head != previous_diag_head) {
+            memcpy(g_adapter_ctx.core_diag_q, saved_dq, sizeof(saved_dq));
+        }
         g_adapter_ctx.core_diag_head = previous_diag_head;
+        g_adapter_ctx.core_diag_tail = previous_diag_tail;
+        memcpy(&g_adapter_ctx.v224, prev_v224_raw, sizeof(g_adapter_ctx.v224));
+        if ((previous_af.af_drive_active != 0U) || (previous_af.af_cmd_pending != 0U)) {
+            enum {
+                TICKS_PER_01MS = 300U,
+            };
+            int32_t d_pos = g_adapter_ctx.id06.focus_pos_se - g_adapter_ctx.af_drive_start_se;
+            int32_t d_tgt = g_adapter_ctx.af.target_se - g_adapter_ctx.af_drive_start_se;
+            v224_af_trace_entry_t rej_tr = {
+                .ts_ms_x10    = boryoza_ticks64_div_u16_lo32(now_ticks, (uint32_t)TICKS_PER_01MS),
+                .pos_se       = clamp_s32_to_i16(d_pos),
+                .tgt_se       = clamp_s32_to_i16(d_tgt),
+                .step_se      = 0,
+                .defocus_mag  = g_adapter_ctx.id06.defocus_k_se,
+                .owner_cmd    = g_adapter_ctx.v224.txn_owner_cmd,
+                .submode      = g_adapter_ctx.af.af_submode,
+                .flags        = 0x01U,
+                .stall_frames = g_adapter_ctx.af.stall_vsyncs,
+            };
+            v224_trace_af_push(&rej_tr);
+        }
     }
 }
 
@@ -1004,7 +1235,9 @@ static void service_vsync_id03(loop_tracker_t *trk, uint64_t now_ticks) {
     }
 
     bool fast_120 = (trk->applied_vsync_hz >= VSYNC_120HZ_FAST);
-    uint16_t vd_phase = e_tmra4_vsync_phase_ticks();
+    uint16_t vd_phase = 0U;
+    uint8_t vd_seq = 0U;
+    e_tmra4_vsync_snapshot(NULL, &vd_seq, &vd_phase, NULL);
     uint16_t id03_phase = fast_120 ? ID03_PHASE_120HZ_TKS : ID03_PHASE_60HZ_TKS;
     uint16_t id03_max = fast_120 ? ID03_MAX_120HZ_TKS : ID03_MAX_60HZ_TKS;
 
@@ -1015,7 +1248,6 @@ static void service_vsync_id03(loop_tracker_t *trk, uint64_t now_ticks) {
     if (trk->vd_pending && can_poll_id03 && (vd_phase >= id03_phase) &&
         (!e_usart1_dma_tx_busy()) && (gpio_ph2_high() == 0U)) {
         uint8_t id03_wire[LOCAL_ID03_WIRE_CAP];
-        uint8_t vd_seq = e_tmra4_vsync_mod240();
         uint8_t previous_toggle = g_adapter_ctx.id03_frame_toggle;
         size_t id03_len = lens_session_build_id03_wire(
             &g_adapter_ctx, id03_wire, vd_seq);
@@ -1118,7 +1350,9 @@ void boryoza_main(void) {
             z_snapshot_publish(&g_adapter_ctx, &g_optics_ws);
         }
 
-        uint32_t vd_now = e_tmra4_vsync_count();
+        uint32_t vd_now = 0U;
+        uint16_t vd_phase_now = 0U;
+        e_tmra4_vsync_snapshot(&vd_now, NULL, &vd_phase_now, NULL);
         if (vd_now != trk.last_vd_seen) {
             trk.last_vd_seen = vd_now;
             trk.vd_pending = true;
@@ -1131,6 +1365,7 @@ void boryoza_main(void) {
         }
         e_usart1_dma_set_sync_hold(sync_hold);
         service_e_handshake_and_link(&trk, now_ticks);
+        service_vsync_rate_governance(now_ticks, &trk, vd_phase_now);
         service_vsync_id03(&trk, now_ticks);
 
         service_hotplug_and_parking(&trk, now_ticks);

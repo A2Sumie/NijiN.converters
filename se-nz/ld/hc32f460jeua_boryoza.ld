@@ -172,6 +172,6 @@ SECTIONS
     ASSERT(__bss_end <= 0x20010000, "SRAM1 overflow")
     ASSERT(__optics_sram2_end <= 0x20020000, "SRAM2 overflow")
     ASSERT(__diag_sram3_end <= 0x20027000, "SRAM3 overflow into unmapped RAM hole [0x20027000, 0x200F0000)")
-    ASSERT(SIZEOF(.diag_sram3) >= 16384, "Diagnostic ring storage was eliminated")
+    ASSERT(SIZEOF(.diag_sram3) >= 23552, "Diagnostic + V2.24 trace SRAM3 storage was eliminated")
     ASSERT(__retram_start >= 0x200F0000 && __retram_end <= 0x200F1000, "Ret_SRAM out of bounds")
 }

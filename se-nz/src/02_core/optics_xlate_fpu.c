@@ -134,7 +134,6 @@ enum {
     ID05_LCA_GRP_IDX   = 11,
     ID05_TAIL_GRP_IDX  = 15,
 };
-static const uint8_t  ID05_MIN_CURVE_FRAMES     = 2U;
 static const uint8_t  SONY_SEL_VIG_2            = 2U;
 static const uint8_t  SONY_SEL_DIST_LEG_4       = 4U;
 static const uint8_t  SONY_SEL_DIST_21          = 21U;
@@ -144,7 +143,6 @@ static const uint8_t  CMD24_RADIAL_LOCKED_BIT   = 0x10U;
 static const uint8_t  CMD24_RADIAL_SEL21_BIT    = 0x20U;
 static const uint32_t CURVE_VALID_DIST_BIT      = 0x01UL;
 static const uint32_t CURVE_VALID_LCA_MASK      = 0x06UL;
-static const uint32_t CURVE_VALID_ALL_MASK      = 0x07UL;
 static const float    DECIMM_TO_MM_F            = 0.1F;
 
 static const float LCA_SCALE_NORM               = 1.0F / 131072.0F;
@@ -531,20 +529,34 @@ static size_t unpack_cmd24_a_masks(const uint8_t *packed, size_t packed_len,
     return cursor;
 }
 
+static void write_cmd24_a_node_q12(const cmd24_a_cfg_t *cfg, size_t node_off,
+                                   const int32_t prev1[60], uint8_t *buf_a) {
+    if (cfg->sparse_r1_v0) {
+        for (size_t ki = 0U; ki < 15U; ++ki) {
+            write_f32_le(&buf_a[node_off + ((15U + (ki * 3U)) * sizeof(float))],
+                         (float)prev1[ki] * Q12_INV_F);
+        }
+        return;
+    }
+    if (cfg->u_const) {
+        for (size_t ri = 0U; ri < cfg->n_rad; ++ri) {
+            for (size_t ci = 0U; ci < 3U; ++ci) {
+                write_f32_le(&buf_a[node_off + (((ri * 15U) + ci) * sizeof(float))],
+                             (float)prev1[(ri * 3U) + ci] * Q12_INV_F);
+            }
+        }
+        return;
+    }
+    for (size_t ki = 0U; ki < cfg->per_node; ++ki) {
+        write_f32_le(&buf_a[node_off + (ki * sizeof(float))], (float)prev1[ki] * Q12_INV_F);
+    }
+}
+
 static void write_cmd24_a_node(const cmd24_a_cfg_t *cfg, size_t slot_idx,
                                const int32_t prev1[60], uint8_t *buf_a) {
     size_t node_off = CMD24_A_COEFF_START + (slot_idx * cfg->per_node * sizeof(float));
     if (cfg->exact_q12) {
-        if (cfg->sparse_r1_v0) {
-            for (size_t ki = 0U; ki < 15U; ++ki) {
-                write_f32_le(&buf_a[node_off + ((15U + (ki * 3U)) * sizeof(float))],
-                             (float)prev1[ki] * Q12_INV_F);
-            }
-        } else {
-            for (size_t ki = 0U; ki < cfg->per_node; ++ki) {
-                write_f32_le(&buf_a[node_off + (ki * sizeof(float))], (float)prev1[ki] * Q12_INV_F);
-            }
-        }
+        write_cmd24_a_node_q12(cfg, node_off, prev1, buf_a);
         return;
     }
     int32_t full[60] = {0};
@@ -627,7 +639,7 @@ static void unpack_cmd24_a_stream(const uint8_t *packed, size_t packed_len, uint
     size_t vals_per_node = per_node;
     if (sparse_r1_v0) {
         vals_per_node = 15U;
-    } else if ((!exact_q12) && u_const) {
+    } else if (u_const) {
         vals_per_node = n_rad * 3U;
     }
     if (((size_t)n_act > n_cap) || (packed_len < (2U + ((size_t)n_act * 2U) + 14U))) {
@@ -908,6 +920,42 @@ static void write_cmd24_b_node_lca(uint8_t *buf_b, size_t node_idx, const lca_co
     write_f32_le(&buf_b[base + ((CMD24_B_BLUE_OFF + (2U * DIST_RADIAL_STRIDE)) * sizeof(float))], lca->b_c2);
 }
 
+static const tamron_z_optics_profile_t *active_tamron_optics_profile(const adapter_ctx_t *ctx) {
+    if (ctx == NULL) {
+        return NULL;
+    }
+    const lens_db_entry_t *entry = lens_db_lookup(ctx->e_lens_id);
+    return (entry != NULL) ? lens_db_get_tamron_optics(entry->tamron_z_idx) : NULL;
+}
+
+static void bump_opt_gen(adapter_ctx_t *ctx) {
+    uint32_t next_gen = ctx->v224.current_opt_gen + 1UL;
+    ctx->v224.current_opt_gen = (next_gen == 0UL) ? 1UL : next_gen;
+}
+
+bool optics_unpack_tamron_cmd24_ab(int16_t tamron_z_idx, uint8_t *buf_a, uint8_t *buf_b) {
+    static const uint8_t CMD24_B_NODES_LOCAL[8] = {
+        0x00U, 0x0CU, 0x18U, 0x24U, 0x30U, 0x3CU, 0x48U, 0x4CU,
+    };
+    const tamron_z_optics_profile_t *prof = lens_db_get_tamron_optics(tamron_z_idx);
+    if ((prof == NULL) || (buf_a == NULL) || (buf_b == NULL)) {
+        return false;
+    }
+    memset(buf_a, 0, Z_CMD24_A_STRIDE);
+    memset(buf_b, 0, Z_CMD24_B_BYTES);
+    buf_a[0] = Z_SYNC_55;
+    buf_a[1] = CMD24_A_FLAG_QUARTIC_3;
+    memset(&buf_a[CMD24_A_NODE_START], 0xFF, Z_CMD24_A_NODE_SLOTS);
+    buf_b[0] = Z_SYNC_55;
+    buf_b[1] = CMD24_B_FLAG_STD;
+    memcpy(&buf_b[2], CMD24_B_NODES_LOCAL, sizeof(CMD24_B_NODES_LOCAL));
+    unpack_cmd24_a_stream(prof->cmd24_a_packed, prof->cmd24_a_packed_len, buf_a);
+    unpack_cmd24_b_stream(prof->cmd24_b_packed, prof->cmd24_b_packed_len, buf_b);
+    boryoza_seal_z_frame(buf_a, Z_CMD24_A_BYTES);
+    boryoza_seal_z_frame(buf_b, Z_CMD24_B_BYTES);
+    return true;
+}
+
 static void populate_spectral_179b(const adapter_ctx_t *ctx, uint8_t *buf_a) {
     memset(&buf_a[Z_CMD24_SPECTRAL_OFFSET], 0, Z_CMD24_SPECTRAL_TOTAL);
     const lens_db_entry_t *entry = lens_db_lookup(ctx->e_lens_id);
@@ -971,7 +1019,7 @@ void optics_disconnect_post_init(adapter_ctx_t *ctx) {
 void optics_build_initial_tables(adapter_ctx_t *ctx, optics_workspace_t *optics) {
     if ((ctx->session_epoch != 0U) &&
         (ctx->optics_built_epoch == ctx->session_epoch) &&
-        (ctx->optics_built_lid == ctx->e_lens_id) &&
+        (ctx->optics_built_lid == ctx->z_primary_lens_id) &&
         (ctx->optics_built_fisheye == ctx->is_fisheye) &&
         ((ctx->optics_ready != 0U) || (ctx->f_max_mm <= ctx->f_min_mm)) &&
         (ctx->session_state != E_SESSION_EMPTY_MOUNT) &&
@@ -996,9 +1044,7 @@ void optics_build_initial_tables(adapter_ctx_t *ctx, optics_workspace_t *optics)
     buf_b[1] = CMD24_B_FLAG_STD;
     memcpy(&buf_b[2], CMD24_B_NODES, sizeof(CMD24_B_NODES));
 
-    const lens_db_entry_t *entry = lens_db_lookup(ctx->e_lens_id);
-    const tamron_z_optics_profile_t *tam_prof =
-        (entry != NULL) ? lens_db_get_tamron_optics(entry->tamron_z_idx) : NULL;
+    const tamron_z_optics_profile_t *tam_prof = active_tamron_optics_profile(ctx);
 
     bool static_optics = false;
     if (tam_prof != NULL) {
@@ -1030,8 +1076,9 @@ void optics_build_initial_tables(adapter_ctx_t *ctx, optics_workspace_t *optics)
     boryoza_seal_z_frame(buf_b, Z_CMD24_B_BYTES);
     optics->active_optics_bank = next_bank;
     ctx->optics_built_epoch = ctx->session_epoch;
-    ctx->optics_built_lid = ctx->e_lens_id;
+    ctx->optics_built_lid = ctx->z_primary_lens_id;
     ctx->optics_built_fisheye = ctx->is_fisheye;
+    bump_opt_gen(ctx);
     if (static_optics || (ctx->session_state == E_SESSION_EMPTY_MOUNT) ||
         (ctx->session_state == E_SESSION_PASSIVE_MOUNT)) {
         ctx->optics_ready = 1U;
@@ -1040,6 +1087,7 @@ void optics_build_initial_tables(adapter_ctx_t *ctx, optics_workspace_t *optics)
         ctx->optics_ready = 0U;
         ctx->optics_disconnected = 0U;
         ctx->id05.optics_skip = 0U;
+        ctx->v224.vig_fit_p_cur = 0U;
     }
 }
 
@@ -1118,13 +1166,14 @@ static bool bytes_any_nonzero(const uint8_t *buf, size_t len) {
     return false;
 }
 
-static void update_live_radial_tables(const adapter_ctx_t *ctx, uint8_t *buf_a) {
+static void update_live_radial_tables(adapter_ctx_t *ctx, uint8_t *buf_a) {
     static const uint8_t LIVE_A_NODES[LIVE_NODE_COUNT] = {0x00U, 0x0CU, 0x18U, 0x4CU};
     static const float STOPDOWN_FACTORS[LIVE_NODE_COUNT] = {1.00F, 0.65F, 0.42F, 0.25F};
 
     buf_a[1] = CMD24_A_FLAG_QUARTIC_3;
     memset(&buf_a[CMD24_A_NODE_START], 0xFF, Z_CMD24_A_NODE_SLOTS);
     memcpy(&buf_a[CMD24_A_NODE_START], LIVE_A_NODES, sizeof(LIVE_A_NODES));
+    ctx->v224.vig_fit_p_cur = ctx->id05.p_cur;
 
     uint8_t vig9[SONY_PACKED_BYTES];
     memcpy(vig9, ctx->id05.vig_core6, E_ID05_CURVE_CORE_BYTES);
@@ -1245,9 +1294,11 @@ static bool live_prime_optics_complete(const adapter_ctx_t *ctx, bool radial_don
     bool no_lca_15grp = (bool)(is_15grp_frame &&
                                ((ctx->id05.grp_present[ID05_LCA_GRP_IDX] == 0U) ||
                                 ((ctx->id05.lca_types[0] == 0U) && (ctx->id05.lca_types[1] == 0U))));
-    bool typed_ready = (bool)((((uint32_t)ctx->id05.optical_curve_valid & CURVE_VALID_ALL_MASK) == CURVE_VALID_ALL_MASK) ||
-                              ((ctx->id05.curve_frames_seen >= ID05_MIN_CURVE_FRAMES) &&
-                               (ctx->id05.optical_curve_valid != 0U)));
+    bool typed_lca_complete =
+        (bool)(((uint32_t)ctx->id05.optical_curve_valid & CURVE_VALID_LCA_MASK) == CURVE_VALID_LCA_MASK);
+    bool typed_ready = (bool)(typed_lca_complete &&
+                              (radial_done ||
+                               (((uint32_t)ctx->id05.optical_curve_valid & CURVE_VALID_DIST_BIT) != 0UL)));
     return (bool)(typed_ready || (lca_updated && radial_done) || no_lca_15grp);
 }
 
@@ -1261,12 +1312,13 @@ void optics_update_from_live_id05(adapter_ctx_t *ctx, optics_workspace_t *optics
         }
         return;
     }
-    if ((ctx->id05.aberration_valid == 0U) || (ctx->id05.optics_curve_dirty == 0U) ||
-        (ctx->e_lens_id == SIGMA_150600_REV2) || (ctx->e_lens_id == SIGMA_150600_REV1)) {
+    if ((ctx->id05.aberration_valid == 0U) || (ctx->id05.optics_curve_dirty == 0U)) {
         return;
     }
-    const lens_db_entry_t *entry = lens_db_lookup_cached(ctx);
-    if ((entry != NULL) && (entry->tamron_z_idx >= 0)) {
+    if ((ctx->e_lens_id == SIGMA_150600_REV2) || (ctx->e_lens_id == SIGMA_150600_REV1)) {
+        return;
+    }
+    if (active_tamron_optics_profile(ctx) != NULL) {
         return;
     }
     uint8_t next_bank = (uint8_t)((uint32_t)optics->active_optics_bank ^ 1UL);
@@ -1300,6 +1352,7 @@ void optics_update_from_live_id05(adapter_ctx_t *ctx, optics_workspace_t *optics
     boryoza_seal_z_frame(buf_a, Z_CMD24_A_BYTES);
     boryoza_seal_z_frame(buf_b, Z_CMD24_B_BYTES);
     optics->active_optics_bank = next_bank;
+    bump_opt_gen(ctx);
     ctx->id05.optics_curve_dirty = 0U;
     if ((ctx->optics_ready != 0U) && (radial_done || lca_updated || (ctx->id05.optical_curve_valid != 0U))) {
         optics_disconnect_post_init(ctx);
@@ -1321,7 +1374,9 @@ void optics_ingest_lf_page(adapter_ctx_t *ctx, optics_workspace_t *optics,
 
 float optics_eval_sony_ds13_focal_mm(const adapter_ctx_t *ctx, const optics_workspace_t *optics,
                                      float nominal_f_mm) {
-    if ((optics->sony_ds13_valid == 0U) || (optics->sony_ds13_len < DS13_MIN_BYTES)) {
+    if ((optics->sony_ds13_valid == 0U) || (optics->sony_ds13_len < DS13_MIN_BYTES) ||
+        (optics->sony_ds13_lid != ctx->e_lens_id) ||
+        ((ctx->v224.ds13_owner_fmin != 0U) && (ctx->v224.ds13_owner_fmin != ctx->f_min_mm))) {
         return nominal_f_mm;
     }
 
@@ -1366,10 +1421,14 @@ float optics_eval_sony_ds13_focal_mm(const adapter_ctx_t *ctx, const optics_work
 
 uint16_t optics_compute_a3_q14(const adapter_ctx_t *ctx, const optics_workspace_t *optics) {
     (void)optics;
-    if (ctx->dist_report_invalid != 0U) {
+    if ((ctx->dist_report_invalid != 0U) &&
+        ((ctx->v224.dist_state != (uint8_t)DIST_STATE_DEGRADED_KIN) ||
+         (ctx->id06.valid == 0U) || (ctx->af.cur_cz <= 0) || (ctx->af.mech_hz <= 0) ||
+         (ctx->af.e_inf_true == ctx->af.e_near_true))) {
         return 0U;
     }
-    if ((ctx->id05.grp_present[4] != 0U) &&
+    if ((ctx->dist_report_invalid == 0U) &&
+        (ctx->id05.grp_present[4] != 0U) &&
         (ctx->id05.mag_code != MAG_INVALID_CODE) && (ctx->id05.mag_code != 0U)) {
         float exp_val = MAG_CODE_EXP_BASE - ((float)ctx->id05.mag_code / MAG_CODE_DIV);
         float beta = boryoza_exp2f(exp_val);
@@ -1377,9 +1436,7 @@ uint16_t optics_compute_a3_q14(const adapter_ctx_t *ctx, const optics_workspace_
         return (uint16_t)clamp_s32(q14, 0, A3_MAX_Q14);
     }
 
-    const lens_db_entry_t *entry = lens_db_lookup(ctx->e_lens_id);
-    const tamron_z_optics_profile_t *tam_prof =
-        (entry != NULL) ? lens_db_get_tamron_optics(entry->tamron_z_idx) : NULL;
+    const tamron_z_optics_profile_t *tam_prof = active_tamron_optics_profile(ctx);
     if (tam_prof != NULL) {
         float z_frac = compute_linear_zoom_frac(ctx);
         float d_frac = (float)ctx->ap.z_dnorm_0x31 / NORM_COORD_MAX_F;

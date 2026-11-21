@@ -216,8 +216,8 @@ enum {
 
 static const uint16_t ASYNC_SLOT_MIN_60HZ_TKS   = 33600U; /* 11.20 ms post-VSync async start */
 static const uint16_t ASYNC_SLOT_MAX_60HZ_TKS   = 45600U; /* 15.20 ms post-VSync async end */
-static const uint16_t ASYNC_SLOT_MIN_120HZ_TKS  = 18600U; /* 6.20 ms post-VSync async start */
-static const uint16_t ASYNC_SLOT_MAX_120HZ_TKS  = 22800U; /* 7.60 ms post-VSync async end */
+static const uint16_t ASYNC_SLOT_MIN_120HZ_TKS  = 15600U; /* 5.20 ms post-VSync async start */
+static const uint16_t ASYNC_SLOT_MAX_120HZ_TKS  = 23700U; /* 7.90 ms post-VSync async end */
 static const uint16_t HS_CMD0A_MAX_PHASE_TKS    = 45499U; /* 1.50 ms pre-VSync guard for CMD 0A */
 static const uint8_t  LEGACY_SEQ_CMD_MIN        = 0xF0U;
 static const uint8_t  RATE_120HZ_THRESH         = 120U;
@@ -580,7 +580,11 @@ void e_usart1_dma_service(adapter_ctx_t *ctx, optics_workspace_t *optics, uint64
         }
         case UART_TX_COOLDOWN: {
             uint32_t elapsed = now32 - s_tx_phase_ticks;
-            uint32_t req_gap = (s_saw_ph2_reply != 0U) ? CS_COOLDOWN_TICKS : NO_ACK_GAP_TICKS;
+            bool is_unacked_id04 = (bool)((s_tx_pending_len >= (uint16_t)EMOUNT_MIN_WIRE_LEN) &&
+                                          (s_usart1_tx_buf[E_WIRE_COMMAND_OFFSET] == 0x04U));
+            uint32_t req_gap = ((s_saw_ph2_reply != 0U) || is_unacked_id04)
+                                   ? CS_COOLDOWN_TICKS
+                                   : NO_ACK_GAP_TICKS;
             if ((cur_ph2 == 0U) && (elapsed >= req_gap)) {
                 s_tx_phase = UART_TX_IDLE;
             }

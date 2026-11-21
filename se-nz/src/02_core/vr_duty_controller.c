@@ -303,6 +303,9 @@ void vr_controller_on_z_mosi20(adapter_ctx_t *ctx, const uint8_t *mosi, size_t m
         return;
     }
     uint8_t flags = (uint8_t)((uint32_t)mosi[Z_MOSI20_RELEASE_OFFSET] & Z_MOSI20_RELEASE_MASK);
+    if (flags != 0U) {
+        ctx->v224.af_or_shutter_seen = 1U;
+    }
     if ((ctx->photo_release_flags != 0U) && (flags == 0U)) {
         finish_photo_transaction(ctx);
     }
@@ -833,6 +836,11 @@ static void start_shutdown_parking_sequence(adapter_ctx_t *ctx, uint64_t now_tic
         return;
     }
     vr_controller_state_t *vr_ctl = &ctx->vr;
+    ctx->v224.park_completed_by_timeout = 0U;
+    ctx->af.af_drive_active = 0U;
+    ctx->af.af_cmd_pending = 0U;
+    ctx->af.af_stop_req = 0U;
+    ctx->af.af_submode = 0U;
     vr_ctl->hotline_enabled = 0U;
     ctx->wake_from_park_req = 0U;
     ctx->wake_boot_prologue_seen = 0U;
@@ -851,6 +859,7 @@ static void start_shutdown_parking_sequence(adapter_ctx_t *ctx, uint64_t now_tic
 
     ctx->session_state = E_SESSION_PARKING;
     vr_controller_invalidate_driver(ctx);
+    ctx->v224.drive_ep_start_t256 = 0UL;
     retain_stop_queue_entry(ctx);
     request_stop(ctx);
     if (vr_ctl->lens_has_ois != 0U) {
@@ -1023,6 +1032,7 @@ void vr_controller_step_parking(adapter_ctx_t *ctx, uint64_t now_ticks) {
     }
     if (total_elapsed >= PARK_MAX_TIMEOUT_TICKS) {
         cancel_stop_transaction(ctx);
+        ctx->v224.park_completed_by_timeout = 1U;
         vr_ctl->park_state = PARK_COMPLETE;
         ctx->session_state = E_SESSION_PARKED;
     }

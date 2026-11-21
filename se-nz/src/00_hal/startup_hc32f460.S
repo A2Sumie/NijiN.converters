@@ -55,12 +55,12 @@ g_flash_vectors:
     .endr
 
 /* =========================================================================
- * 2. Bootloader Version Stamp (V2.23 2026-11)
+ * 2. Bootloader Version Stamp (V2.24 2026-11)
  * ========================================================================= */
     .section .readme_ver, "a", %progbits
     .global g_readme_version_stamp
 g_readme_version_stamp:
-    .byte 0x17, 0x02, 0x0B, 0x1A
+    .byte 0x18, 0x02, 0x0B, 0x1A
 
 /* =========================================================================
  * 3. Runtime 1024B-Aligned RAM Vector Table in SRAMH

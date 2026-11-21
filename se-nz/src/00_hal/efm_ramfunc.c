@@ -2,7 +2,7 @@
 
 static const uint32_t EFM_WAIT_LIMIT    = 2000000UL;
 static const uint32_t EFM_HOLD_MAX_LOOPS = 4000000UL;
-static const uint32_t FLASH_DIAG_MIN    = 0x0007A000UL;
+static const uint32_t FLASH_DIAG_MIN    = 0x00078000UL;
 static const uint32_t FLASH_DIAG_MAX    = 0x0007FFE0UL; /* Exclude top 32-byte reserved trim tail */
 static const uint32_t WORD_ALIGN_MASK   = 0x00000003UL;
 static const uint32_t ERASE_DUMMY_VALUE = 0x12345678UL; /* Sector-erase trigger word */
@@ -109,9 +109,9 @@ BORYOZA_RAMFUNC int efm_program_word_ramfunc(uint32_t flash_addr, uint32_t word_
 }
 
 BORYOZA_RAMFUNC int efm_erase_sector_ramfunc(uint32_t sector_addr) {
-    if ((sector_addr != HC32_FLASH_BLACKBOX_BASE) &&
-        (sector_addr != HC32_FLASH_JOURNAL_A_BASE) &&
-        (sector_addr != HC32_FLASH_JOURNAL_B_BASE)) {
+    if ((sector_addr != HC32_FLASH_JOURNAL_PONG_BASE) &&
+        (sector_addr != HC32_FLASH_BLACKBOX_BASE) &&
+        (sector_addr != HC32_FLASH_JOURNAL_A_BASE)) {
         return EFM_ERR_PARAM;
     }
 

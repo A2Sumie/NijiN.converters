@@ -76,12 +76,13 @@ static const uint16_t DIST_SENTINEL_FFFF  = 0xFFFFU;
 static const uint16_t DIST_SENTINEL_00FF  = 0x00FFU;
 static const int32_t  SAFE_CZ_MAX_256K    = 262144;
 static const int32_t  PERMILLE_SCALE_1024 = 1024;
-static const int32_t  PM_CLOSE_FLOOR      = 850;
-static const int32_t  PM_LOW_FLOOR        = 250;
+static const int32_t  PM_CLOSE_FLOOR      = 64;
 static const int32_t  PM_FROZEN_TRAVEL    = 220;
-static const float    MFD_CLOSE_CUTOFF_M  = 0.32F;
+static const int32_t  SE_FROZEN_MIN_TRV   = 64;
+static const int32_t  RECOVER_MAX_STEP_X  = 128;
 static const uint8_t  DIST_SAMPLES_CAP    = 250U;
 static const uint8_t  DIST_FROZEN_MIN_CNT = 4U;
+static const uint8_t  DIST_RECOVER_VOTES  = 3U;
 
 static const float LOG2_ANCHOR_1M_CODE    = 20480.0F;
 static const float LOG2_OCTAVE_CODES      = 3072.0F;
@@ -292,11 +293,32 @@ static bool compute_finite_distance_code(adapter_ctx_t *ctx, int32_t *out_code) 
 static void sync_mf_and_exif_distance_gates(adapter_ctx_t *ctx) {
     aperture_exif_state_t *ap_st = &ctx->ap;
     if (ctx->dist_report_invalid != 0U) {
-        ap_st->z_dist_0x117 = 0x0000U;
-        ap_st->z_steps_0xbb = 0U;
-        ap_st->z_alt_k_bucket = 0U;
-        ap_st->z_mf_gate_2d = 0x00U;
-        ap_st->z_mf_gate_2e = 0x00U;
+        bool kin_trust = (bool)((ctx->v224.dist_state == (uint8_t)DIST_STATE_DEGRADED_KIN) &&
+                                (ctx->id06.valid != 0U) && (ctx->af.cur_cz > 0) &&
+                                (ctx->af.mech_hz > 0) &&
+                                (ctx->af.e_inf_true != ctx->af.e_near_true));
+        if (kin_trust) {
+            int32_t kin_code = compute_kinematic_dist_code(ctx);
+            uint16_t code_117 = (uint16_t)clamp_s32(kin_code, Z_DIST_FINITE_MIN,
+                                                    Z_DIST_FINITE_MAX_SAFE);
+            ap_st->z_dist_0x117 = code_117;
+            ap_st->z_steps_0xbb = focus_position_bucket(ctx, code_117);
+            ap_st->z_alt_k_bucket = (ap_st->z_steps_0xbb != 0U) ? ap_st->z_steps_0xbb : 1U;
+            uint32_t tbl_idx = 1UL + (((uint32_t)ap_st->z_alt_k_bucket *
+                                       ((uint32_t)MF_GATE_TABLE_LEN - 1UL)) /
+                                      (uint32_t)MF_BUCKETS_TOTAL);
+            if (tbl_idx >= (uint32_t)MF_GATE_TABLE_LEN) {
+                tbl_idx = (uint32_t)MF_GATE_TABLE_LEN - 1UL;
+            }
+            ap_st->z_mf_gate_2d = MF_GATE_TABLE[tbl_idx][0];
+            ap_st->z_mf_gate_2e = MF_GATE_TABLE[tbl_idx][1];
+        } else {
+            ap_st->z_dist_0x117 = 0x0000U;
+            ap_st->z_steps_0xbb = 0U;
+            ap_st->z_alt_k_bucket = 0U;
+            ap_st->z_mf_gate_2d = 0x00U;
+            ap_st->z_mf_gate_2e = 0x00U;
+        }
         ctx->dist_anchor_valid = 0U;
         ctx->dist_anchor_pending = 0U;
         ctx->dist_cam_bias_valid = 0U;
@@ -341,6 +363,11 @@ static void sync_mf_and_exif_distance_gates(adapter_ctx_t *ctx) {
     ap_st->z_mf_gate_2e = MF_GATE_TABLE[tbl_idx][1];
 }
 
+static const tamron_z_optics_profile_t *active_tamron_profile_for_ap(adapter_ctx_t *ctx) {
+    const lens_db_entry_t *db_ent = lens_db_lookup_cached(ctx);
+    return (db_ent != NULL) ? lens_db_get_tamron_optics(db_ent->tamron_z_idx) : NULL;
+}
+
 void aperture_controls_configure_for_lens(adapter_ctx_t *ctx) {
     aperture_exif_state_t *ap_st = &ctx->ap;
     if (ap_st->raw_p_open_08 >= E_AV_VALID_FLOOR) {
@@ -366,9 +393,7 @@ void aperture_controls_configure_for_lens(adapter_ctx_t *ctx) {
     ap_st->last_p_target = ap_st->p_target_emount;
     ap_st->id03_toggle = 0U;
     ap_st->z_dnorm_0x31 = 0U;
-    const lens_db_entry_t *db_ent = lens_db_lookup_cached(ctx);
-    const tamron_z_optics_profile_t *tam_prof =
-        (db_ent != NULL) ? lens_db_get_tamron_optics(db_ent->tamron_z_idx) : NULL;
+    const tamron_z_optics_profile_t *tam_prof = active_tamron_profile_for_ap(ctx);
     if ((tam_prof != NULL) && (tam_prof->u_axis_mode == OPT_U_AXIS_RATIO_FMAX) &&
         (ctx->f_max_mm > 0U) && (ctx->f_max_mm > ctx->f_min_mm)) {
         int32_t num = ((int32_t)ctx->f_cur_mm * (int32_t)NORM_COORD_MAX) + ((int32_t)ctx->f_max_mm / 2);
@@ -378,44 +403,74 @@ void aperture_controls_configure_for_lens(adapter_ctx_t *ctx) {
     }
     ap_st->z_eff_focal_q4 = (uint16_t)(ctx->f_cur_mm * Q4_INT_MULT);
     ap_st->z_mag_a3_q14 = 0U;
+    ctx->v224.dist_last_id06_seq = 0UL;
     sync_mf_and_exif_distance_gates(ctx);
 }
 
 /* NOLINTNEXTLINE(bugprone-easily-swappable-parameters) */
 static uint8_t detect_frozen_dist_encoder(adapter_ctx_t *ctx, uint16_t dist_x, int32_t cur_pm) {
-    if ((ctx->dist_first_x != 0U) && (dist_x != ctx->dist_first_x)) {
+    if ((ctx->dist_first_x != 0U) && (dist_x != ctx->dist_first_x) &&
+        (dist_x != DIST_SENTINEL_FFFF)) {
         ctx->dist_verified_dynamic = 1U;
+        ctx->v224.dist_state = (uint8_t)DIST_STATE_VALID;
+        ctx->v224.dist_last_valid_raw_x = dist_x;
         return 0U;
     }
-    if ((ctx->dist_first_x == 0U) && (dist_x != 0U)) {
-        ctx->dist_first_x = dist_x;
+    if (dist_x == OPTICAL_INF_CODE_X) {
+        return 0U;
     }
     if (ctx->dist_verified_dynamic != 0U) {
         return 0U;
+    }
+    if ((ctx->v224.id06_sample_seq == 0UL) ||
+        (ctx->v224.id06_sample_seq == ctx->v224.dist_last_id06_seq)) {
+        return 0U;
+    }
+    ctx->v224.dist_last_id06_seq = ctx->v224.id06_sample_seq;
+    if ((ctx->dist_first_x == 0U) && (dist_x != 0U)) {
+        ctx->dist_first_x = dist_x;
+        ctx->v224.dist_stall_ref_se = ctx->id06.focus_pos_se;
     }
     if (ctx->dist_id05_samples == 0U) {
         ctx->dist_first_x = dist_x;
         ctx->dist_min_se = cur_pm;
         ctx->dist_max_se = cur_pm;
         ctx->dist_id05_samples = 1U;
+        ctx->v224.dist_stall_ref_se = ctx->id06.focus_pos_se;
+        ctx->v224.dist_last_raw_x = dist_x;
         return 0U;
     }
     if (dist_x != ctx->dist_first_x) {
         ctx->dist_verified_dynamic = 1U;
+        ctx->v224.dist_state = (uint8_t)DIST_STATE_VALID;
+        ctx->v224.dist_last_valid_raw_x = dist_x;
         return 0U;
     }
+    bool independent_pos = (bool)((ctx->id06.focus_pos_se != ctx->id06.focus_prev_se) ||
+                                  (ctx->v224.dist_last_raw_x != dist_x) ||
+                                  (cur_pm != ctx->dist_min_se && cur_pm != ctx->dist_max_se));
     if (cur_pm < ctx->dist_min_se) {
         ctx->dist_min_se = cur_pm;
     }
     if (cur_pm > ctx->dist_max_se) {
         ctx->dist_max_se = cur_pm;
     }
-    if (ctx->dist_id05_samples < DIST_SAMPLES_CAP) {
+    if (independent_pos && (ctx->dist_id05_samples < DIST_SAMPLES_CAP)) {
         ctx->dist_id05_samples = (uint8_t)(ctx->dist_id05_samples + 1U);
     }
-    if ((ctx->dist_id05_samples >= DIST_FROZEN_MIN_CNT) &&
-        ((ctx->dist_max_se - ctx->dist_min_se) >= PM_FROZEN_TRAVEL)) {
+    ctx->v224.dist_last_raw_x = dist_x;
+    int32_t se_travel = ctx->id06.focus_pos_se - ctx->v224.dist_stall_ref_se;
+    if (se_travel < 0) {
+        se_travel = -se_travel;
+    }
+    bool cross_thresh = (bool)(((ctx->dist_max_se - ctx->dist_min_se) >= PM_FROZEN_TRAVEL) ||
+                               (se_travel >= SE_FROZEN_MIN_TRV));
+    if ((ctx->dist_id05_samples >= DIST_FROZEN_MIN_CNT) && cross_thresh &&
+        (dist_x != DIST_SENTINEL_FFFF)) {
         return 3U;
+    }
+    if (cross_thresh) {
+        ctx->v224.dist_state = (uint8_t)DIST_STATE_SUSPECT;
     }
     return 0U;
 }
@@ -435,6 +490,7 @@ static void reset_frozen_window_on_zoom(adapter_ctx_t *ctx, int32_t cur_pm) {
             ctx->dist_min_se = cur_pm;
             ctx->dist_max_se = cur_pm;
             ctx->dist_id05_samples = 1U;
+            ctx->v224.dist_stall_ref_se = ctx->id06.focus_pos_se;
             ctx->dist_last_f01 = ctx->id05.f_nom_0p1mm;
             ctx->dist_last_zoom = ctx->id06.zoom_norm;
         } else {
@@ -451,16 +507,124 @@ static void reset_frozen_window_on_zoom(adapter_ctx_t *ctx, int32_t cur_pm) {
     ctx->dist_last_zoom = ctx->id06.zoom_norm;
 }
 
+static bool try_recover_degraded_distance(adapter_ctx_t *ctx, uint16_t dist_x) {
+    bool is_sentinel = (bool)((dist_x == 0U) || (dist_x == DIST_SENTINEL_FF00) ||
+                              (dist_x == DIST_SENTINEL_FFFF) ||
+                              ((dist_x >= DIST_SENTINEL_7F00) && (dist_x < DIST_SENTINEL_FFFF)));
+    if (is_sentinel) {
+        if ((dist_x == DIST_SENTINEL_FF00) ||
+            ((dist_x >= DIST_SENTINEL_7F00) && (dist_x < DIST_SENTINEL_FFFF))) {
+            ctx->v224.dist_good_streak = 0U;
+            ctx->v224.dist_recover_dir = 0;
+        }
+        ctx->v224.dist_last_raw_x = dist_x;
+        return false;
+    }
+    if (dist_x >= OPTICAL_INF_CODE_X) {
+        return false;
+    }
+    uint16_t prev_x = ctx->v224.dist_last_raw_x;
+    ctx->v224.dist_last_raw_x = dist_x;
+    if ((prev_x == 0U) || (prev_x >= OPTICAL_INF_CODE_X) || (dist_x == prev_x)) {
+        return false;
+    }
+    int32_t d_x = (int32_t)dist_x - (int32_t)prev_x;
+    int32_t abs_dx = (d_x >= 0) ? d_x : -d_x;
+    if (abs_dx > RECOVER_MAX_STEP_X) {
+        ctx->v224.dist_good_streak = 0U;
+        ctx->v224.dist_recover_dir = 0;
+        return false;
+    }
+    int8_t step_dir = (d_x > 0) ? 1 : -1;
+    if ((ctx->v224.dist_good_streak == 0U) || (ctx->v224.dist_recover_dir != step_dir)) {
+        ctx->v224.dist_recover_dir = step_dir;
+        ctx->v224.dist_good_streak = 1U;
+    } else if (ctx->v224.dist_good_streak < DIST_RECOVER_VOTES) {
+        ctx->v224.dist_good_streak = (uint8_t)(ctx->v224.dist_good_streak + 1U);
+    }
+    if (ctx->v224.dist_good_streak >= DIST_RECOVER_VOTES) {
+        static const uint32_t BB_DIST_RECOVER_TAG = 0x52454356UL;
+        ctx->dist_report_invalid = 0U;
+        ctx->dist_verified_dynamic = 1U;
+        ctx->v224.dist_state = (uint8_t)DIST_STATE_VALID;
+        ctx->v224.dist_good_streak = 0U;
+        ctx->v224.dist_recover_dir = 0;
+        ctx->v224.dist_last_valid_raw_x = dist_x;
+        ctx->z_snap_cache.c10_done_mask = 0U;
+        ctx->z_snap_cache.c12_done_mask = 0U;
+        lens_session_push_diag(ctx, BB_EVT_V2_DIST_SUMMARY,
+                               ((uint32_t)DIST_STATE_VALID) | ((uint32_t)dist_x << SHIFT_16),
+                               (uint32_t)ctx->id06.focus_pos_se, BB_DIST_RECOVER_TAG,
+                               (uint32_t)ctx->af.cur_cz);
+        return true;
+    }
+    return false;
+}
+
+static uint8_t classify_distance_validity(adapter_ctx_t *ctx, uint16_t dist_x,
+                                          bool id06_ready, int32_t cur_pm) {
+    if ((dist_x == DIST_SENTINEL_FF00) ||
+        ((dist_x >= DIST_SENTINEL_7F00) && (dist_x < DIST_SENTINEL_FFFF))) {
+        return 1U;
+    }
+    if (dist_x == DIST_SENTINEL_FFFF) {
+        return 0U;
+    }
+    if ((dist_x == DIST_SENTINEL_00FF) && (ctx->dist_verified_dynamic == 0U) && id06_ready &&
+        (cur_pm < PM_CLOSE_FLOOR)) {
+        return 2U;
+    }
+    if (id06_ready && (dist_x != 0U)) {
+        return detect_frozen_dist_encoder(ctx, dist_x, cur_pm);
+    }
+    if ((ctx->dist_first_x != 0U) && (dist_x != 0U) && (dist_x != ctx->dist_first_x)) {
+        ctx->dist_verified_dynamic = 1U;
+        ctx->v224.dist_state = (uint8_t)DIST_STATE_VALID;
+        ctx->v224.dist_last_valid_raw_x = dist_x;
+    } else if ((ctx->dist_first_x == 0U) && (dist_x != 0U)) {
+        ctx->dist_first_x = dist_x;
+    }
+    return 0U;
+}
+
+static void record_distance_invalid(adapter_ctx_t *ctx, uint8_t bad_reason,
+                                    uint16_t dist_x, bool id06_ready) {
+    ctx->dist_report_invalid = bad_reason;
+    ctx->v224.dist_state = (id06_ready && (ctx->af.e_inf_true != ctx->af.e_near_true))
+                               ? (uint8_t)DIST_STATE_DEGRADED_KIN
+                               : (uint8_t)DIST_STATE_INVALID;
+    ctx->v224.dist_good_streak = 0U;
+    ctx->v224.dist_recover_dir = 0;
+    ctx->z_snap_cache.c10_done_mask = 0U;
+    ctx->z_snap_cache.c12_done_mask = 0U;
+    uint32_t diag_a0 = ((uint32_t)bad_reason) |
+                       ((uint32_t)ctx->id05.mag_code << SHIFT_8) |
+                       ((uint32_t)dist_x << SHIFT_16);
+    uint32_t diag_a2 = ((uint32_t)(uint16_t)ctx->af.e_inf_true) |
+                       ((uint32_t)(uint16_t)ctx->af.e_near_true << SHIFT_16);
+    lens_session_push_diag(ctx, BB_EVT_DIST_FALLBACK, diag_a0,
+                           (uint32_t)ctx->id06.focus_pos_se, diag_a2,
+                           (uint32_t)ctx->af.cur_cz);
+}
+
 void aperture_controls_validate_distance(adapter_ctx_t *ctx) {
-    if ((ctx->dist_report_invalid != 0U) || (ctx->id05.grp_present[ID05_GRP_FOCAL] == 0U) ||
+    if ((ctx->id05.grp_present[ID05_GRP_FOCAL] == 0U) ||
         (ctx->session_state == E_SESSION_EMPTY_MOUNT) ||
         (ctx->session_state == E_SESSION_PASSIVE_MOUNT)) {
         return;
     }
     uint16_t dist_x = ctx->id05.dist_code_x;
-    uint8_t bad_reason = 0U;
     bool id06_ready = (bool)((ctx->id06.valid != 0U) && (ctx->af.mech_hz > 0) &&
                              (ctx->id06.lim_near_se != ctx->id06.lim_far_se));
+    if (ctx->dist_report_invalid != 0U) {
+        (void)try_recover_degraded_distance(ctx, dist_x);
+        if (ctx->dist_report_invalid != 0U) {
+            ctx->v224.dist_state = (id06_ready && (ctx->af.e_inf_true != ctx->af.e_near_true))
+                                       ? (uint8_t)DIST_STATE_DEGRADED_KIN
+                                       : (uint8_t)DIST_STATE_INVALID;
+            return;
+        }
+    }
     int32_t cur_pm = 0;
     if (id06_ready) {
         int32_t safe_cz = clamp_s32(ctx->af.cur_cz, 0, SAFE_CZ_MAX_256K);
@@ -468,31 +632,10 @@ void aperture_controls_validate_distance(adapter_ctx_t *ctx) {
         reset_frozen_window_on_zoom(ctx, cur_pm);
     }
 
-    if ((dist_x == DIST_SENTINEL_FF00) || ((dist_x >= DIST_SENTINEL_7F00) && (dist_x < DIST_SENTINEL_FFFF))) {
-        bad_reason = 1U;
-    } else if ((dist_x == DIST_SENTINEL_00FF) && (ctx->dist_verified_dynamic == 0U) && id06_ready &&
-               (((af_servo_effective_mfd_meters(ctx) > MFD_CLOSE_CUTOFF_M) && (cur_pm < PM_CLOSE_FLOOR)) ||
-                (cur_pm < PM_LOW_FLOOR))) {
-        bad_reason = 2U;
-    } else if (id06_ready && (dist_x != 0U)) {
-        bad_reason = detect_frozen_dist_encoder(ctx, dist_x, cur_pm);
-    } else if ((ctx->dist_first_x != 0U) && (dist_x != 0U) && (dist_x != ctx->dist_first_x)) {
-        ctx->dist_verified_dynamic = 1U;
-    } else if ((ctx->dist_first_x == 0U) && (dist_x != 0U)) {
-        ctx->dist_first_x = dist_x;
-    }
+    uint8_t bad_reason = classify_distance_validity(ctx, dist_x, id06_ready, cur_pm);
+    ctx->v224.dist_last_raw_x = dist_x;
     if (bad_reason != 0U) {
-        ctx->dist_report_invalid = bad_reason;
-        ctx->z_snap_cache.c10_done_mask = 0U;
-        ctx->z_snap_cache.c12_done_mask = 0U;
-        uint32_t diag_a0 = ((uint32_t)bad_reason) |
-                           ((uint32_t)ctx->id05.mag_code << SHIFT_8) |
-                           ((uint32_t)dist_x << SHIFT_16);
-        uint32_t diag_a2 = ((uint32_t)(uint16_t)ctx->af.e_inf_true) |
-                           ((uint32_t)(uint16_t)ctx->af.e_near_true << SHIFT_16);
-        lens_session_push_diag(ctx, BB_EVT_DIST_FALLBACK, diag_a0,
-                               (uint32_t)ctx->id06.focus_pos_se, diag_a2,
-                               (uint32_t)ctx->af.cur_cz);
+        record_distance_invalid(ctx, bad_reason, dist_x, id06_ready);
     }
 }
 
@@ -544,9 +687,7 @@ static void update_focal_and_zoom_norm(adapter_ctx_t *ctx) {
         ap_st->z_dnorm_0x31 = 0U;
     }
 
-    const lens_db_entry_t *db_ent = lens_db_lookup_cached(ctx);
-    const tamron_z_optics_profile_t *tam_prof =
-        (db_ent != NULL) ? lens_db_get_tamron_optics(db_ent->tamron_z_idx) : NULL;
+    const tamron_z_optics_profile_t *tam_prof = active_tamron_profile_for_ap(ctx);
     int32_t znorm = (int32_t)NORM_COORD_MAX;
     if (ctx->f_max_mm > ctx->f_min_mm) {
         bool have_f_nom = (bool)((ctx->id05.grp_present[ID05_GRP_FOCAL] != 0U) &&

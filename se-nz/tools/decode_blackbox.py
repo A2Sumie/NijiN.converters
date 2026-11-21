@@ -33,9 +33,19 @@ EVENT_NAMES = {
     0x000E: "DIST_FALLBACK",
     0x000F: "SESSION_SUMMARY",
     0x0010: "PERF_OPTICS_SNAPSHOT",
+    0x0011: "E_BAUD_FALLBACK",
+    0x0012: "HS_CAPS",
+    0x0013: "PASSIVE_REPROBE",
+    0x0014: "E_RATE_AUDIT",
     0x00E1: "E_PROTO_ERR",
     0x00E2: "Z_HDR_CSUM_ERR",
     0x00E3: "AF_STALL_ABORT",
+    0x00B0: "V2_AF_SUMMARY",
+    0x00B1: "V2_PF_SUMMARY",
+    0x00B2: "V2_DIST_SUMMARY",
+    0x00B3: "V2_FREEZE_META",
+    0x00B4: "V2_BODY_ID",
+    0x00B5: "V2_PHASE2_OPT",
     0x00FF: "HARDFAULT",
 }
 
@@ -116,6 +126,50 @@ def decode_event_fields(evt: int, arg0: int, arg1: int, arg2: int, arg3: int) ->
             "vsync_hz": (arg3 >> 16) & 0xFF,
             "home_completed_ok": (arg3 >> 24) & 0xFF,
         }
+    if evt == 0x0011:
+        return {
+            "e_lens_id": f"0x{arg0 & 0xFFFF:04X}",
+            "hs_step": arg1 & 0xFF,
+            "tx07_b1": f"0x{arg2 & 0xFF:02X}",
+            "hs_elapsed_ticks": arg3,
+        }
+    if evt == 0x0012:
+        flags = (arg0 >> 24) & 0xFF
+        return {
+            "tx07_family": arg0 & 0xFF,
+            "tx07_b1": f"0x{(arg0 >> 8) & 0xFF:02X}",
+            "tx08_0c": f"0x{(arg0 >> 16) & 0xFF:02X}",
+            "cap_32": flags & 1,
+            "cap_5a": (flags >> 1) & 1,
+            "cap_5f": (flags >> 2) & 1,
+            "cap_2b": (flags >> 3) & 1,
+            "cap_44": (flags >> 4) & 1,
+            "has_ext_5a": (flags >> 5) & 1,
+            "supports_120hz": (flags >> 6) & 1,
+            "sony_hr_upgrade": (flags >> 7) & 1,
+            "tx3d_drive_word": arg1 & 0xFFFF,
+            "tx3d_drive_valid": (arg1 >> 16) & 0xFF,
+            "hold_750k": (arg1 >> 24) & 0xFF,
+            "baud_kbps": arg2 & 0xFFFF,
+            "vsync_hz": (arg2 >> 16) & 0xFF,
+            "baud_fallback_done": (arg2 >> 24) & 0xFF,
+            "cap_bytes_4_5_6_11": f"0x{arg3:08X}",
+        }
+    if evt == 0x0013:
+        return {
+            "since_mount_ticks": arg0,
+            "reprobe_count": arg1 & 0xFF,
+            "hs_step": arg2 & 0xFF,
+            "hit": arg3 & 0xFF,
+        }
+    if evt == 0x0014:
+        return {
+            "vsync_span": arg0,
+            "id06_span": arg1,
+            "vsync_hz": arg2 & 0xFF,
+            "sony_hr_upgrade": (arg2 >> 8) & 0xFF,
+            "fallback_enforced": arg3 & 0xFF,
+        }
     if evt == 0x0010:
         return {
             "z_dist_0x117": f"0x{arg0 & 0xFFFF:04X}",
@@ -155,6 +209,81 @@ def decode_event_fields(evt: int, arg0: int, arg1: int, arg2: int, arg3: int) ->
             "target_se": arg1,
             "focus_pos_se": arg2,
             "cur_cz": arg3,
+        }
+    if evt == 0x00B0:
+        return {
+            "owner_cmd": f"0x{arg0 & 0xFF:02X}",
+            "latched_abort_submode": f"0x{(arg0 >> 8) & 0xFF:02X}",
+            "landing_redrive_count": (arg0 >> 16) & 0xFF,
+            "cdaf_min_pulse_se": (arg0 >> 24) & 0xFF,
+            "residual_se": s16(arg1),
+            "af_stall_abort_total": (arg1 >> 16) & 0xFFFF,
+            "txn_seq": arg2,
+            "af_trace_count": arg3,
+        }
+    if evt == 0x00B1:
+        return {
+            "cl_trim_cz": s16(arg0),
+            "diverge_count": (arg0 >> 16) & 0xFF,
+            "fuse_latched": (arg0 >> 24) & 0xFF,
+            "anchor_x_q8": arg1 if arg1 < 0x80000000 else arg1 - 0x100000000,
+            "pf_trace_count": arg2,
+            "anchor_dist_x": arg3 & 0xFFFF,
+        }
+    if evt == 0x00B2:
+        hi16 = (arg0 >> 16) & 0xFFFF
+        is_recovery = (
+            (arg2 == 0x52454356)
+            or (
+                arg2 == 0
+                and (arg0 & 0xFFFF) == 0
+                and (((arg0 >> 16) & 0xFF) > 3 or ((arg0 >> 24) & 0xFF) > 1)
+            )
+        )
+        if (arg2 >> 16) != 0x5355 and is_recovery:
+            return {
+                "subkind": "runtime_recovery",
+                "dist_state": arg0 & 0xFF,
+                "recovered_raw_x": hi16,
+                "focus_pos_se": arg1,
+                "cur_cz": arg3,
+            }
+        summary = {
+            "subkind": "session_summary",
+            "dist_state": arg0 & 0xFF,
+            "dist_good_streak": (arg0 >> 8) & 0xFF,
+            "dist_report_invalid": (arg0 >> 16) & 0xFF,
+            "z_advertise_fx": (arg0 >> 24) & 0xFF,
+            "dist_last_raw_x": arg1 & 0xFFFF,
+            "dist_last_valid_raw_x": arg2 & 0xFFFF,
+            "z_dist_0x117": f"0x{arg3 & 0xFFFF:04X}",
+        }
+        if arg2 == 0 and (arg0 & 0xFFFF) == 0 and 0x0100 <= hi16 <= 0x0103:
+            summary["ambiguous_legacy_b2"] = True
+        return summary
+    if evt == 0x00B3:
+        return {
+            "freeze_count": arg0 & 0xFFFF,
+            "freeze_reason": (arg0 >> 16) & 0xFF,
+            "freeze_pre_cnt": (arg0 >> 24) & 0xFF,
+            "body_cap_flags": f"0x{arg1:08X}",
+            "delivered_opt_gen": arg2,
+            "current_opt_gen": arg3,
+        }
+    if evt == 0x00B4:
+        vidx_raw = arg2 & 0xFFFF
+        return {
+            "body_cap_flags": f"0x{arg0:08X}",
+            "delivered_snap_sig": f"0x{arg1:08X}",
+            "viltrox_comp_idx": vidx_raw - 0x10000 if vidx_raw >= 0x8000 else vidx_raw,
+            "phase2_tc_opt_gen": arg3,
+        }
+    if evt == 0x00B5:
+        return {
+            "delivered_snap_sig": f"0x{arg0:08X}",
+            "current_snap_sig": f"0x{arg1:08X}",
+            "delivered_opt_gen": arg2,
+            "current_opt_gen": arg3,
         }
     if evt == 0x00FF:
         return {
@@ -224,6 +353,8 @@ def run_selftest() -> int:
         pack_rec(0x000F, 0x807B, 42 | (1 << 16), 2 | (1 << 16), 85 | (1 << 16) | (2 << 24), 255 | (120 << 16) | (1 << 24)),
         pack_rec(0x0010, 0x807B, 0x5210 | ((0xFFFB & 0xFFFF) << 16), 2048 | (1024 << 16), (800 << 0) | (2457 << 16), 145 | (1 << 16) | (1 << 17)),
         pack_rec(0x00E3, 0x807B, 0xEE | (1 << 8) | (14 << 16), 9000, 3000, 8192),
+        pack_rec(0x00B0, 0x807B, 0xE8 | (0x26 << 8) | (2 << 16) | (6 << 24), (4 & 0xFFFF) | (1 << 16), 3, 25),
+        pack_rec(0x00B4, 0xC142, 0x0000005F, 0x12345678, 2, 1),
         pack_rec(0x00FF, 0x807B, 0x00012345, 0x00011111, 0x00008200, 0x20028000),
     ]
     for i, rec in enumerate(samples):
@@ -236,7 +367,9 @@ def run_selftest() -> int:
     assert res["records"][4]["decoded"]["dist_cam_bias_117"] == -5
     assert res["records"][4]["decoded"]["retram_warm_hit"] == 1
     assert res["records"][4]["decoded"]["ds13_cache_hit"] == 1
-    assert res["records"][6]["decoded"]["fault_aux_reg"] == "0x20028000"
+    assert res["records"][6]["decoded"]["owner_cmd"] == "0xE8"
+    assert res["records"][7]["decoded"]["viltrox_comp_idx"] == 2
+    assert res["records"][8]["decoded"]["fault_aux_reg"] == "0x20028000"
     print(json.dumps({"status": "PASS", "tested_records": len(samples)}))
     return 0
 

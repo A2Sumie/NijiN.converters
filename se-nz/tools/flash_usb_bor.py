@@ -23,9 +23,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 FW_ROOT = HERE.parent
 DEFAULT_PUB = (
-    HERE / "BORYOZA_V223.PUB"
-    if (HERE / "BORYOZA_V223.PUB").is_file()
-    else FW_ROOT / "build/BORYOZA_V223.PUB"
+    HERE / "BORYOZA_V224.PUB"
+    if (HERE / "BORYOZA_V224.PUB").is_file()
+    else FW_ROOT / "build/BORYOZA_V224.PUB"
 )
 DEFAULT_VOLUMES_ROOT = Path("/Volumes")
 BOR_VOLUME_STEM = "BOR"
@@ -237,7 +237,7 @@ def run_selftest() -> int:
 
     pub_bytes = DEFAULT_PUB.read_bytes()
     expected_ver, expected_date = expected_version_from_pub(pub_bytes)
-    assert expected_ver == "V2.23", expected_ver
+    assert expected_ver == "V2.24", expected_ver
     assert expected_date == "2026-11", expected_date
 
     with tempfile.TemporaryDirectory() as tmp:

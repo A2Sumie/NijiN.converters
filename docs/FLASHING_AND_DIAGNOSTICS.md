@@ -18,7 +18,7 @@ Outputs under `se-nz/build/`:
 
 - `se-nz/build/BORYOZA_V200.elf` — Linked Cortex-M4F ELF with debug symbols and `.map`
 - `se-nz/build/BORYOZA_V200.bin` — Raw flashable APP image (`0x10000`-based)
-- `se-nz/build/BORYOZA_V200.PUB` & `se-nz/build/BORYOZA_V223.PUB` — `512 B`-padded USB MSC upgrade package (`PRODUCTVER:1.001` container)
+- `se-nz/build/BORYOZA_V200.PUB` & `se-nz/build/BORYOZA_V224.PUB` — `512 B`-padded USB MSC upgrade package (`PRODUCTVER:1.001` container)
 - `se-nz/build/pack_manifest.json` — Exact sector count, `program_end_hex`, VFP/closure audit counts, and SHA-256 digests
 - `se-nz/build/libboryoza_core.dylib` (macOS) / `.so` (Linux) — Host ASan+UBSan shared core library
 
@@ -31,7 +31,7 @@ The stock bootloader exposes a small FAT12 virtual disk with root volume label `
 ### Automated Contiguous Flasher (macOS / POSIX)
 
 ```sh
-python3 se-nz/tools/flash_usb_bor.py --pub se-nz/build/BORYOZA_V223.PUB
+python3 se-nz/tools/flash_usb_bor.py --pub se-nz/build/BORYOZA_V224.PUB
 ```
 
 Useful options:
@@ -42,19 +42,20 @@ Useful options:
 
 ### Expected Version Token After Flash
 
-- USB `README.TXT`: `LF 2.23` (`0x17 0x02 0x0B 0x1A` at APP offset `0x1000`)
-- Nikon Z menu / EXIF firmware string (`CMD 0x10` bytes `[3..6]`): `00 00 23 02`
+- USB `README.TXT`: `LF 2.24` (`0x18 0x02 0x0B 0x1A` at APP offset `0x1000`)
+- Nikon Z menu / EXIF firmware string (`CMD 0x10` bytes `[3..6]`): `00 00 24 02`
 
 ---
 
 ## 3. Extracting & Decoding Blackbox and Journal Logs
 
-The firmware writes field diagnostics cleanly into the top `24 KiB` (`48` × `512 B` sectors) of internal Flash, isolated from APP code and the FAT12 window:
+The firmware writes field diagnostics cleanly into the top `32 KiB` (`64` × `512 B` sectors) of internal Flash, isolated from APP code and the FAT12 window:
 
 | LBA Range (on BOR disk) | Flash Offset | Size | Contents |
 |---|---|---|---|
-| `858 .. 873` | `0x7A000 .. 0x7BFFF` | `8 KiB` (`256 × 32 B`) | `CRC32`-protected Blackbox ring (`BOOT_OK`, `HS_IDENTITY`, `Z_FIRST_WIN`, `E_LINK_UP`, `PERF_OPTICS_SNAPSHOT`, `SESSION_SUMMARY`, error/abort events) |
-| `874 .. 905` | `0x7C000 .. 0x7FFFF` | `16 KiB` (`2 × 8 KiB`) | `Ping/Pong` dual-sector `128 B` Journal (`latched_e_inf/near`, focal/aperture state, `linear_mf_code`, `vr_last_mode`) |
+| `842 .. 857` | `0x78000 .. 0x79FFF` | `8 KiB` (`64 × 128 B`) | Active `Ping/Pong` Journal `JNL_PONG` (`latched_e_inf/near`, focal/aperture state, `linear_mf_code`, `vr_last_mode`, `FX/DX` LRU) |
+| `858 .. 873` | `0x7A000 .. 0x7BFFF` | `8 KiB` (`256 × 32 B`) | `CRC32`-protected Blackbox ring (`BOOT_OK`, `HS_IDENTITY`, `HS_CAPS`, `Z_FIRST_WIN`, `E_LINK_UP`, `PERF_OPTICS_SNAPSHOT`, `SESSION_SUMMARY`, `V2_*_SUMMARY`, error/abort events) |
+| `874 .. 905` | `0x7C000 .. 0x7FFFF` | `16 KiB` (`2 × 8 KiB`) | Active `JNL_A` (`0x7C000..0x7DFFF`) + read-only legacy `JNL_B` (`0x7E000..0x7FFFF`) |
 
 ### Extract Live USB Telemetry
 

@@ -13,7 +13,6 @@ static const uint32_t LENS_FLAG_MACRO         = (1UL << 1U);
 static const uint32_t LENS_FLAG_FISHEYE       = (1UL << 2U);
 static const uint32_t LENS_FLAG_OIS           = (1UL << 3U);
 static const uint32_t LENS_FLAG_OIS_SWITCH    = (1UL << 4U);
-static const uint32_t LENS_FLAG_120HZ         = (1UL << 5U);
 static const uint32_t LENS_FLAG_DUAL_FLOATING = (1UL << 6U);
 static const uint32_t LENS_FLAG_ID03_32B      = (1UL << 7U);
 
@@ -31,8 +30,8 @@ typedef struct {
     uint16_t cam_e_near;
     uint8_t  brand;
     uint8_t  flags;
-    int8_t   spectral_idx;  /* -1 if neutral zero, >=0 index in g_spectral_81_db */
-    int8_t   tamron_z_idx;  /* -1 if none, >=0 index in secondary optics table */
+    int16_t  spectral_idx;  /* -1 if neutral zero, >=0 index in g_spectral_81_db */
+    int16_t  tamron_z_idx;  /* -1 if none, >=0 index in secondary optics table */
 } lens_db_entry_t;
 
 typedef struct {
@@ -105,6 +104,7 @@ enum { SPECTRAL_81_POINTS = 81 };
 bool lens_db_unpack_spectral81(int16_t spectral_idx, uint8_t out81[SPECTRAL_81_POINTS]);
 void lens_db_get_opt_huff(const uint8_t **counts12, const uint8_t **syms, size_t *sym_count);
 const tamron_z_optics_profile_t *lens_db_get_tamron_optics(int16_t tamron_z_idx);
+size_t lens_db_get_tamron_optics_count(void);
 void sigma_150600_eval_zoom(uint16_t zoom_norm, sigma_150600_zoom_eval_t *out_eval);
 uint32_t sigma_150600_thermal_vmax_tps(int8_t temp_c);
 const sigma_150600_optics_knot_t *sigma_150600_get_optics_knots(size_t *out_count);

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 PUB_HEADER = b"PRODUCTVER:1.001"
-README_STAMP = bytes([0x17, 0x02, 0x0B, 0x1A])
+README_STAMP = bytes([0x18, 0x02, 0x0B, 0x1A])
 EXPECTED_MSP = 0x1FFFFF00
 APP_FLASH_BASE = 0x00010000
 APP_FLASH_LIMIT = 0x00060000

@@ -39,6 +39,22 @@ static const uint8_t  Z_CMD_AF_E0              = 0xE0U;
 static const uint8_t  Z_CMD_AF_EF              = 0xEFU;
 static const uint32_t SCK_STABLE_HIGH_TICKS    = 15000UL;
 static const uint32_t PHASE2_STUCK_MAX_TICKS   = 3000000UL;
+static const uint64_t RATE_OBS_RETRY_MIN_TKS   = 12000ULL;
+static const uint64_t RATE_OBS_FAST_MIN_TKS    = 18000ULL;
+static const uint64_t RATE_OBS_FAST_MAX_TKS    = 34500ULL;
+static const uint64_t RATE_OBS_SLOW_MIN_TKS    = 40500ULL;
+static const uint64_t RATE_OBS_GAP_MAX_TKS     = 240000ULL;
+static const uint8_t  RATE_OBS_FAST_STREAK     = 4U;
+static const uint8_t  RATE_OBS_SLOW_STREAK     = 3U;
+enum {
+    RATE_OBS_HZ_60  = 60U,
+    RATE_OBS_HZ_120 = 120U,
+};
+
+typedef struct {
+    uint32_t session_epoch;
+    uint64_t done_ticks;
+} spi3_rate_sample_t;
 static const size_t   HDR_OFF_CMD              = 3U;
 static const size_t   HDR_OFF_SUB              = 4U;
 static const size_t   HDR_OFF_LEN_LO           = 5U;
@@ -62,13 +78,76 @@ static uint8_t          s_first_win_bb    = 0U;
 static uint8_t          s_sck_high_seen   = 0U;
 static uint32_t         s_sck_high_t32    = 0U;
 static uint32_t         s_phase2_t32      = 0U;
-static uint32_t         s_last_done_t32   = 0U;
+static uint64_t         s_last_done_ticks = 0ULL;
 static uint8_t          s_cmd51_tx_stat   = 0U;
 static uint8_t          s_cmd51_ready_ok  = 0U;
 static uint8_t          s_phase2_pdown    = 0U;
 static uint8_t          s_identity_ready_at_reply = 0U;
 static uint8_t          s_optics_ready_at_reply   = 0U;
 static bool             s_provisional_identity_seen = false;
+static uint32_t         s_hdr_epoch               = 0UL;
+static uint32_t         s_hdr_snap_sig            = 0UL;
+static uint32_t         s_hdr_opt_gen             = 0UL;
+static uint32_t         s_z20_obs_epoch           = 0UL;
+static uint64_t         s_last_z20_full_ticks     = 0ULL;
+static uint8_t          s_z20_fast_streak         = 0U;
+static uint8_t          s_z20_slow_streak         = 0U;
+static uint8_t          s_z20_target_hz           = (uint8_t)RATE_OBS_HZ_60;
+static uint8_t          s_z20_rate_decided        = 0U;
+
+static void spi3_reset_cmd20_rate_observer(uint32_t session_epoch) {
+    s_z20_obs_epoch = session_epoch;
+    s_last_z20_full_ticks = 0ULL;
+    s_z20_fast_streak = 0U;
+    s_z20_slow_streak = 0U;
+    s_z20_target_hz = (uint8_t)RATE_OBS_HZ_60;
+    s_z20_rate_decided = 0U;
+}
+
+static void spi3_observe_cmd20_rate(const spi3_rate_sample_t *sample) {
+    if (s_z20_obs_epoch != sample->session_epoch) {
+        spi3_reset_cmd20_rate_observer(sample->session_epoch);
+    }
+    if (s_last_z20_full_ticks == 0ULL) {
+        s_last_z20_full_ticks = (sample->done_ticks != 0ULL) ? sample->done_ticks : 1ULL;
+        return;
+    }
+    if (sample->done_ticks <= s_last_z20_full_ticks) {
+        return;
+    }
+    uint64_t delta_ticks = sample->done_ticks - s_last_z20_full_ticks;
+    if (delta_ticks < RATE_OBS_RETRY_MIN_TKS) {
+        return;
+    }
+    s_last_z20_full_ticks = sample->done_ticks;
+    if ((delta_ticks >= RATE_OBS_FAST_MIN_TKS) && (delta_ticks <= RATE_OBS_FAST_MAX_TKS)) {
+        s_z20_slow_streak = 0U;
+        if (s_z20_fast_streak < (uint8_t)BYTE_MASK) {
+            s_z20_fast_streak = (uint8_t)(s_z20_fast_streak + 1U);
+        }
+        if (s_z20_fast_streak >= RATE_OBS_FAST_STREAK) {
+            s_z20_target_hz = (uint8_t)RATE_OBS_HZ_120;
+            s_z20_rate_decided = 1U;
+        }
+    } else if ((delta_ticks >= RATE_OBS_SLOW_MIN_TKS) && (delta_ticks <= RATE_OBS_GAP_MAX_TKS)) {
+        s_z20_fast_streak = 0U;
+        if (s_z20_slow_streak < (uint8_t)BYTE_MASK) {
+            s_z20_slow_streak = (uint8_t)(s_z20_slow_streak + 1U);
+        }
+        if (s_z20_slow_streak >= RATE_OBS_SLOW_STREAK) {
+            s_z20_target_hz = (uint8_t)RATE_OBS_HZ_60;
+            s_z20_rate_decided = 1U;
+        }
+    } else if (delta_ticks > RATE_OBS_GAP_MAX_TKS) {
+        s_z20_fast_streak = 0U;
+        s_z20_slow_streak = 0U;
+        s_z20_target_hz = (uint8_t)RATE_OBS_HZ_60;
+        s_z20_rate_decided = 1U;
+    } else {
+        s_z20_fast_streak = 0U;
+        s_z20_slow_streak = 0U;
+    }
+}
 
 BORYOZA_RAMFUNC static void spi3_arm_window_ramfunc(const uint8_t *tx_src, bool use_rx_sink,
                                                     uint32_t halfword_cnt) {
@@ -127,13 +206,17 @@ void z_spi3_slave_init(void) {
     s_sck_high_seen = 0U;
     s_sck_high_t32 = 0U;
     s_phase2_t32 = 0U;
-    s_last_done_t32 = 0U;
+    s_last_done_ticks = 0ULL;
     s_cmd51_tx_stat = 0U;
     s_cmd51_ready_ok = 0U;
     s_phase2_pdown = 0U;
     s_identity_ready_at_reply = 0U;
     s_optics_ready_at_reply = 0U;
     s_provisional_identity_seen = false;
+    s_hdr_epoch = 0UL;
+    s_hdr_snap_sig = 0UL;
+    s_hdr_opt_gen = 0UL;
+    spi3_reset_cmd20_rate_observer(0UL);
 
     mmio_w32(spi_cr1_addr(SPI3_BASE_ADDR), SPI3_CR1_STOPPED);
     mmio_w32(spi_cfg1_addr(SPI3_BASE_ADDR), SPI3_CFG1_VAL);
@@ -162,6 +245,7 @@ static void spi3_stop_dma_and_reset_flags(bool reset_sck_seen) {
         s_identity_ready_at_reply = 0U;
         s_optics_ready_at_reply = 0U;
         s_provisional_identity_seen = false;
+        spi3_reset_cmd20_rate_observer(0UL);
     }
 }
 
@@ -218,6 +302,7 @@ static bool spi3_phase2_mosi_valid(uint8_t cmd, const uint8_t *mosi, size_t mosi
 
 static void spi3_consume_phase2_mosi(adapter_ctx_t *ctx, const optics_workspace_t *optics,
                                      uint64_t now_ticks, const uint8_t *mosi, size_t mosi_len) {
+    af_servo_note_wall_ticks(ctx, now_ticks);
     uint8_t cmd = s_cur_cmd;
     uint8_t sub = s_cur_sub;
     if (!spi3_phase2_mosi_valid(cmd, mosi, mosi_len)) {
@@ -251,14 +336,83 @@ static void spi3_consume_phase2_mosi(adapter_ctx_t *ctx, const optics_workspace_
         z_snapshot_publish(ctx, optics);
     } else if (((cmd >= Z_CMD_AF_C0) && (cmd <= Z_CMD_AF_C4)) ||
                ((cmd >= Z_CMD_AF_E0) && (cmd <= Z_CMD_AF_EF))) {
+        int32_t prev_lz = ctx->af.mech_lz;
+        int32_t prev_hz = ctx->af.mech_hz;
+        int32_t prev_cz = ctx->af.cur_cz;
         af_servo_on_z_command(ctx, cmd, mosi, mosi_len);
+        if ((ctx->af.mech_lz != prev_lz) || (ctx->af.mech_hz != prev_hz) ||
+            (ctx->af.cur_cz != prev_cz)) {
+            z_snapshot_publish(ctx, optics);
+        }
     }
 }
 
 static void spi3_note_phase2_done(uint64_t busy_ticks) {
-    s_last_done_t32 = (uint32_t)busy_ticks;
+    s_last_done_ticks = busy_ticks;
     if ((s_cur_cmd == Z_CMD_PARK_STAT_51) && (s_cmd51_tx_stat == Z_CMD51_READY_VAL)) {
         s_cmd51_ready_ok = 1U;
+    }
+}
+
+static void spi3_note_phase2_tc_delivery(adapter_ctx_t *ctx) {
+    enum {
+        Z_CMD_BODY_CAP_03   = 0x03U,
+        Z_CMD_ID11_VAL      = 0x11U,
+        Z_CMD_ID12_VAL      = 0x12U,
+        Z_CMD_BODY_CAP_23   = 0x23U,
+        Z_CMD_OPTICS_24_VAL = 0x24U,
+        Z_CMD_BODY_CAP_28   = 0x28U,
+        Z_CMD_BODY_CAP_31   = 0x31U,
+        Z_CMD_BODY_CAP_39   = 0x39U,
+        Z_CMD_AF_E8_VAL     = 0xE8U,
+        Z_CMD24_SUB_A0      = 0x00U,
+        Z_CMD24_SUB_A2      = 0x02U,
+        Z_CMD24_SUB_B0      = 0x10U,
+        Z_CMD24_SUB_B2      = 0x12U,
+    };
+    typedef struct {
+        uint8_t  cmd;
+        uint32_t bit;
+    } z_body_cap_map_t;
+    static const z_body_cap_map_t k_body_cap_map[] = {
+        { Z_CMD_BODY_CAP_03,   (uint32_t)BODY_CAP_CMD03_BIT },
+        { Z_CMD_BODY_CAP_23,   (uint32_t)BODY_CAP_CMD23_BIT },
+        { Z_CMD_OPTICS_24_VAL, (uint32_t)BODY_CAP_CMD24_BIT },
+        { Z_CMD_BODY_CAP_28,   (uint32_t)BODY_CAP_CMD28_BIT },
+        { Z_CMD_BODY_CAP_31,   (uint32_t)BODY_CAP_CMD31_BIT },
+        { Z_CMD_BODY_CAP_39,   (uint32_t)BODY_CAP_CMD39_BIT },
+        { Z_CMD_AF_E8_VAL,     (uint32_t)BODY_CAP_CMDE8_BIT },
+    };
+    for (size_t idx = 0U; idx < (sizeof(k_body_cap_map) / sizeof(k_body_cap_map[0])); ++idx) {
+        if (s_cur_cmd == k_body_cap_map[idx].cmd) {
+            ctx->v224.body_cap_flags |= k_body_cap_map[idx].bit;
+            break;
+        }
+    }
+
+    if ((((s_cur_cmd == Z_CMD_LENS_IDENTITY) && (s_cur_sub == 0U) &&
+          (s_cur_data_bytes >= Z_CMD10_BYTES)) ||
+         ((s_cur_cmd == Z_CMD_ID11_VAL) && (s_cur_sub == 0U) &&
+          (s_cur_data_bytes >= Z_CMD11_BYTES)) ||
+         ((s_cur_cmd == Z_CMD_ID12_VAL) && (s_cur_sub == 0U) &&
+          (s_cur_data_bytes >= Z_CMD12_BYTES))) &&
+        (s_hdr_snap_sig != 0UL)) {
+        ctx->v224.delivered_snap_sig = s_hdr_snap_sig;
+    }
+
+    bool is_cmd24_a = (bool)(((s_cur_sub == Z_CMD24_SUB_A0) || (s_cur_sub == Z_CMD24_SUB_A2)) &&
+                             (s_cur_data_bytes == (uint16_t)Z_CMD24_A_BYTES));
+    bool is_cmd24_b = (bool)(((s_cur_sub == Z_CMD24_SUB_B0) || (s_cur_sub == Z_CMD24_SUB_B2)) &&
+                             (s_cur_data_bytes == (uint16_t)Z_CMD24_B_BYTES));
+    if ((s_cur_cmd == Z_CMD_OPTICS_24) && (is_cmd24_a || is_cmd24_b) && (s_hdr_opt_gen != 0UL)) {
+        ctx->v224.phase2_tc_epoch = s_hdr_epoch;
+        ctx->v224.phase2_tc_opt_gen = s_hdr_opt_gen;
+        if ((ctx->v224.delivered_opt_epoch != s_hdr_epoch) ||
+            (ctx->v224.delivered_opt_gen == 0UL) ||
+            (s_hdr_opt_gen < ctx->v224.delivered_opt_gen)) {
+            ctx->v224.delivered_opt_epoch = s_hdr_epoch;
+            ctx->v224.delivered_opt_gen = s_hdr_opt_gen;
+        }
     }
 }
 
@@ -349,6 +503,9 @@ uint8_t z_spi3_slave_poll(adapter_ctx_t *ctx, const optics_workspace_t *optics,
         s_cur_data_bytes = (uint16_t)data_bytes;
         s_identity_ready_at_reply = ctx->identity_ready;
         s_optics_ready_at_reply = ctx->optics_ready;
+        s_hdr_epoch = ctx->session_epoch;
+        s_hdr_snap_sig = z_snapshot_compute_sig(ctx);
+        s_hdr_opt_gen = ctx->v224.current_opt_gen;
 
         z_cmd_req_t req = {
             .cmd = cmd,
@@ -381,8 +538,18 @@ uint8_t z_spi3_slave_poll(adapter_ctx_t *ctx, const optics_workspace_t *optics,
     if ((uint32_t)s_cur_data_bytes <= SMALL_WIN_MAX_BYTES) {
         spi3_consume_phase2_mosi(ctx, optics, now_ticks, s_spi3_rx_buf, s_cur_data_bytes);
     }
+    if ((ctx->session_state == E_SESSION_ACTIVE) && (ctx->identity_ready != 0U) &&
+        (s_cur_cmd == Z_CMD_STATUS_20) && (s_cur_sub == 0x00U) &&
+        (s_cur_data_bytes == (uint16_t)Z_CMD20_00_BYTES)) {
+        spi3_rate_sample_t sample = {
+            .session_epoch = ctx->session_epoch,
+            .done_ticks = busy_ticks,
+        };
+        spi3_observe_cmd20_rate(&sample);
+    }
     spi3_note_phase2_done(busy_ticks);
     s_spi3_win_count += 1U;
+    spi3_note_phase2_tc_delivery(ctx);
     spi3_record_provisional_if_unready();
     if (s_first_win_bb == 0U) {
         s_first_win_bb = 1U;
@@ -418,6 +585,10 @@ bool z_spi3_slave_is_idle_hdr(void) {
                   ((mmio_r32(dma_intstat1_addr(DMA1_BASE_ADDR)) & DMA1_BOTH_TC_MASK) == 0UL));
 }
 
+bool z_spi3_slave_phase2_busy(void) {
+    return (bool)(s_spi3_phase == SPI3_WIN_DATA_PAY);
+}
+
 bool z_spi3_slave_phase2_powerdown_seen(void) {
     return (bool)(s_phase2_pdown != 0U);
 }
@@ -431,7 +602,27 @@ void z_spi3_slave_clear_cmd51_ready(void) {
 }
 
 uint32_t z_spi3_slave_idle_ticks(uint64_t now_ticks) {
-    static const uint32_t SIGN_BIT_U32 = 0x80000000UL;
-    uint32_t diff = (uint32_t)now_ticks - s_last_done_t32;
-    return ((diff & SIGN_BIT_U32) != 0UL) ? 0U : diff;
+    static const uint64_t U32_IDLE_MAX = 0xFFFFFFFFULL;
+    if (now_ticks <= s_last_done_ticks) {
+        return 0U;
+    }
+    uint64_t elapsed = now_ticks - s_last_done_ticks;
+    return (elapsed > U32_IDLE_MAX) ? UINT32_MAX : (uint32_t)elapsed;
+}
+
+uint8_t z_spi3_slave_poll_cmd20_rate_target(const adapter_ctx_t *ctx, uint64_t now_ticks) {
+    uint32_t session_epoch = (ctx != NULL) ? ctx->session_epoch : 0U;
+    if (s_z20_obs_epoch != session_epoch) {
+        spi3_reset_cmd20_rate_observer(session_epoch);
+        return 0U;
+    }
+    if ((s_last_z20_full_ticks != 0ULL) && (now_ticks > s_last_z20_full_ticks) &&
+        ((now_ticks - s_last_z20_full_ticks) > RATE_OBS_GAP_MAX_TKS)) {
+        s_z20_fast_streak = 0U;
+        s_z20_slow_streak = 0U;
+        if (s_z20_rate_decided != 0U) {
+            s_z20_target_hz = (uint8_t)RATE_OBS_HZ_60;
+        }
+    }
+    return (s_z20_rate_decided != 0U) ? s_z20_target_hz : 0U;
 }

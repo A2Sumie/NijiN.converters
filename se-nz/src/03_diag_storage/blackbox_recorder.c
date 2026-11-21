@@ -33,7 +33,10 @@ static const size_t   BB_WIDX_CFSR      = 5U;
 static const size_t   BB_WIDX_ZERO      = 6U;
 static const size_t   BB_WIDX_CRC       = 7U;
 
-BORYOZA_SRAM3_BUF static volatile diag_ring_entry_t s_diag_ring[DIAG_RING_ENTRIES];
+BORYOZA_SRAM3_BUF static volatile diag_ring_entry_t          s_diag_ring[DIAG_RING_ENTRIES];
+BORYOZA_SRAM3_BUF static volatile v224_af_trace_entry_t       s_af_trace_ring[V224_AF_TRACE_CAP];
+BORYOZA_SRAM3_BUF static volatile v224_parfocal_trace_entry_t s_pf_trace_ring[V224_PF_TRACE_CAP];
+BORYOZA_SRAM3_BUF static volatile v224_af_trace_entry_t       s_freeze_snapshot[V224_FREEZE_CAP];
 BORYOZA_RETRAM_BUF static retram_state_t      s_retram_state;
 BORYOZA_RETRAM_BUF static retram_warm_cache_t s_retram_warm;
 
@@ -54,6 +57,16 @@ static uint16_t    s_bb_next_slot      = 0U;
 static uint16_t    s_diag_ring_idx     = 0U;
 static uint8_t     s_bb_flash_degraded = 0U;
 static uint8_t     s_retram_warm_hit   = 0U;
+static uint16_t    s_af_tr_head        = 0U;
+static uint16_t    s_af_tr_cnt         = 0U;
+static uint16_t    s_pf_tr_head        = 0U;
+static uint16_t    s_pf_tr_cnt         = 0U;
+static uint16_t    s_freeze_cnt        = 0U;
+static uint16_t    s_freeze_write_idx  = 0U;
+static uint16_t    s_freeze_pre_cnt    = 0U;
+static uint16_t    s_freeze_drop_cnt   = 0U;
+static uint8_t     s_freeze_post_rem   = 0U;
+static uint8_t     s_freeze_reason     = 0U;
 
 BORYOZA_RAMFUNC static uint32_t crc32_update_words(uint32_t crc_state, const uint32_t *words,
                                                    uint32_t word_count) {
@@ -161,6 +174,15 @@ static bool bb_slot_boundary_ok(uint16_t next_slot) {
 
 void blackbox_init(void) {
     s_diag_ring_idx = 0U;
+    s_af_tr_head = 0U;
+    s_af_tr_cnt = 0U;
+    s_pf_tr_head = 0U;
+    s_pf_tr_cnt = 0U;
+    s_freeze_cnt = 0U;
+    s_freeze_write_idx = 0U;
+    s_freeze_drop_cnt = 0U;
+    s_freeze_post_rem = 0U;
+    s_freeze_reason = 0U;
     s_bb_pend_head = 0U;
     s_bb_pend_count = 0U;
     s_bb_flash_degraded = 0U;
@@ -564,4 +586,166 @@ bool retram_warm_cache_load_ds13(uint16_t e_lens_id, uint8_t *out_buf, uint16_t 
     }
     *out_len = hdr->ds13_len;
     return true;
+}
+
+enum {
+    BB_U16_SATURATE  = 0xFFFFU,
+    TRACE_WORDS_16B  = 4U,
+};
+
+static void copy_trace16_to_ring(volatile void *ring_base, uint32_t slot_idx,
+                                 const void *src_entry) {
+    uint32_t words[TRACE_WORDS_16B];
+    memcpy(words, src_entry, sizeof(words));
+    volatile uint32_t *dst_words =
+        (volatile uint32_t *)ring_base + ((size_t)slot_idx * (size_t)TRACE_WORDS_16B);
+    for (uint32_t widx = 0U; widx < (uint32_t)TRACE_WORDS_16B; ++widx) {
+        dst_words[widx] = words[widx];
+    }
+}
+
+static void copy_trace16_from_ring(const volatile void *ring_base, uint32_t slot_idx,
+                                   void *dst_entry) {
+    uint32_t words[TRACE_WORDS_16B];
+    const volatile uint32_t *src_words =
+        (const volatile uint32_t *)ring_base + ((size_t)slot_idx * (size_t)TRACE_WORDS_16B);
+    for (uint32_t widx = 0U; widx < (uint32_t)TRACE_WORDS_16B; ++widx) {
+        words[widx] = src_words[widx];
+    }
+    memcpy(dst_entry, words, sizeof(words));
+}
+
+typedef struct {
+    uint16_t head;
+    uint16_t total_cnt;
+    uint16_t ring_cap;
+    uint16_t max_entries;
+} trace_ring_span_t;
+
+static uint16_t read_volatile_ring16(const volatile void *ring_base,
+                                     const trace_ring_span_t *span, void *out_entries) {
+    if ((out_entries == NULL) || (span->max_entries == 0U)) {
+        return 0U;
+    }
+    uint16_t avail = (span->total_cnt < span->ring_cap) ? span->total_cnt : span->ring_cap;
+    uint16_t out_n = (avail < span->max_entries) ? avail : span->max_entries;
+    uint32_t cap32 = (uint32_t)span->ring_cap;
+    uint32_t start = ((uint32_t)span->head + cap32 - (uint32_t)out_n) % cap32;
+    uint8_t *dst_bytes = (uint8_t *)out_entries;
+    for (uint16_t idx = 0U; idx < out_n; ++idx) {
+        uint32_t ridx = (start + (uint32_t)idx) % cap32;
+        copy_trace16_from_ring(ring_base, ridx, &dst_bytes[(size_t)idx * (size_t)V224_AF_TRACE_ENTRY_BYTES]);
+    }
+    return out_n;
+}
+
+void v224_trace_reset(void) {
+    s_af_tr_head = 0U;
+    s_af_tr_cnt = 0U;
+    s_pf_tr_head = 0U;
+    s_pf_tr_cnt = 0U;
+    s_freeze_cnt = 0U;
+    s_freeze_write_idx = 0U;
+    s_freeze_pre_cnt = 0U;
+    s_freeze_drop_cnt = 0U;
+    s_freeze_post_rem = 0U;
+    s_freeze_reason = 0U;
+}
+
+void v224_trace_af_push(const v224_af_trace_entry_t *entry) {
+    if (entry == NULL) {
+        return;
+    }
+    uint32_t idx = (uint32_t)s_af_tr_head;
+    s_af_tr_head = (uint16_t)((idx + 1UL) % (uint32_t)V224_AF_TRACE_CAP);
+    copy_trace16_to_ring(s_af_trace_ring, idx, entry);
+    if (s_af_tr_cnt < (uint16_t)BB_U16_SATURATE) {
+        s_af_tr_cnt = (uint16_t)(s_af_tr_cnt + 1U);
+    } else if (s_freeze_drop_cnt < (uint16_t)BB_U16_SATURATE) {
+        s_freeze_drop_cnt = (uint16_t)(s_freeze_drop_cnt + 1U);
+    }
+    if ((s_freeze_post_rem > 0U) && (s_freeze_write_idx < (uint16_t)V224_FREEZE_CAP)) {
+        copy_trace16_to_ring(s_freeze_snapshot, (uint32_t)s_freeze_write_idx, entry);
+        s_freeze_write_idx = (uint16_t)(s_freeze_write_idx + 1U);
+        s_freeze_post_rem = (uint8_t)(s_freeze_post_rem - 1U);
+    }
+}
+
+void v224_trace_parfocal_push(const v224_parfocal_trace_entry_t *entry) {
+    if (entry == NULL) {
+        return;
+    }
+    uint32_t idx = (uint32_t)s_pf_tr_head;
+    s_pf_tr_head = (uint16_t)((idx + 1UL) % (uint32_t)V224_PF_TRACE_CAP);
+    copy_trace16_to_ring(s_pf_trace_ring, idx, entry);
+    if (s_pf_tr_cnt < (uint16_t)BB_U16_SATURATE) {
+        s_pf_tr_cnt = (uint16_t)(s_pf_tr_cnt + 1U);
+    }
+}
+
+void v224_trace_freeze_trigger(uint8_t reason_code) {
+    s_freeze_reason = reason_code;
+    if (s_freeze_cnt < (uint16_t)BB_U16_SATURATE) {
+        s_freeze_cnt = (uint16_t)(s_freeze_cnt + 1U);
+    }
+    if (s_freeze_write_idx == 0U) {
+        uint16_t avail = (s_af_tr_cnt < (uint16_t)V224_AF_TRACE_CAP)
+                             ? s_af_tr_cnt
+                             : (uint16_t)V224_AF_TRACE_CAP;
+        uint16_t pre_n = (avail <= (uint16_t)V224_FREEZE_PRE)
+                             ? avail
+                             : (uint16_t)V224_FREEZE_PRE;
+        uint32_t start = ((uint32_t)s_af_tr_head + (uint32_t)V224_AF_TRACE_CAP - (uint32_t)pre_n) %
+                         (uint32_t)V224_AF_TRACE_CAP;
+        for (uint16_t idx = 0U; idx < pre_n; ++idx) {
+            uint32_t ridx = (start + (uint32_t)idx) % (uint32_t)V224_AF_TRACE_CAP;
+            v224_af_trace_entry_t tmp;
+            copy_trace16_from_ring(s_af_trace_ring, ridx, &tmp);
+            copy_trace16_to_ring(s_freeze_snapshot, (uint32_t)idx, &tmp);
+        }
+        s_freeze_pre_cnt = pre_n;
+        s_freeze_write_idx = pre_n;
+        s_freeze_post_rem = (uint8_t)V224_FREEZE_POST;
+    }
+}
+
+void v224_trace_get_counts(v224_trace_counts_t *out_counts) {
+    if (out_counts == NULL) {
+        return;
+    }
+    out_counts->af_cnt = s_af_tr_cnt;
+    out_counts->pf_cnt = s_pf_tr_cnt;
+    out_counts->freeze_cnt = s_freeze_cnt;
+    out_counts->freeze_pre_cnt = s_freeze_pre_cnt;
+    out_counts->freeze_written = s_freeze_write_idx;
+    out_counts->freeze_drops = s_freeze_drop_cnt;
+    out_counts->freeze_reason = s_freeze_reason;
+}
+
+uint16_t v224_trace_read_af_ring(v224_af_trace_entry_t *out_entries, uint16_t max_entries) {
+    const trace_ring_span_t span = {
+        s_af_tr_head, s_af_tr_cnt, (uint16_t)V224_AF_TRACE_CAP, max_entries,
+    };
+    return read_volatile_ring16(s_af_trace_ring, &span, out_entries);
+}
+
+uint16_t v224_trace_read_pf_ring(v224_parfocal_trace_entry_t *out_entries, uint16_t max_entries) {
+    const trace_ring_span_t span = {
+        s_pf_tr_head, s_pf_tr_cnt, (uint16_t)V224_PF_TRACE_CAP, max_entries,
+    };
+    return read_volatile_ring16(s_pf_trace_ring, &span, out_entries);
+}
+
+uint16_t v224_trace_read_freeze(v224_af_trace_entry_t *out_entries, uint16_t max_entries) {
+    if ((out_entries == NULL) || (max_entries == 0U)) {
+        return 0U;
+    }
+    uint16_t avail = (s_freeze_write_idx < (uint16_t)V224_FREEZE_CAP)
+                         ? s_freeze_write_idx
+                         : (uint16_t)V224_FREEZE_CAP;
+    uint16_t out_n = (avail < max_entries) ? avail : max_entries;
+    for (uint16_t idx = 0U; idx < out_n; ++idx) {
+        copy_trace16_from_ring(s_freeze_snapshot, (uint32_t)idx, &out_entries[idx]);
+    }
+    return out_n;
 }

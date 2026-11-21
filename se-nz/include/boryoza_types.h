@@ -14,7 +14,7 @@ extern "C" {
  * ========================================================================= */
 enum {
     BORYOZA_FW_VER_MAJOR      = 2U,
-    BORYOZA_FW_VER_MINOR      = 23U,
+    BORYOZA_FW_VER_MINOR      = 24U,
     BORYOZA_LF_BCD_MAJOR      = (((BORYOZA_FW_VER_MAJOR / 10U) << 4U) | (BORYOZA_FW_VER_MAJOR % 10U)),
     BORYOZA_LF_BCD_MINOR      = (((BORYOZA_FW_VER_MINOR / 10U) << 4U) | (BORYOZA_FW_VER_MINOR % 10U)),
 
@@ -68,9 +68,33 @@ enum {
     BLACKBOX_SLOTS            = 256,
     BLACKBOX_RECORD_BYTES     = 32,
     JOURNAL_SLOTS_PER_SECTOR  = 64,
+    JOURNAL_B_SLOTS_USABLE    = 63,
     JOURNAL_RECORD_BYTES      = 128,
     JOURNAL_RESERVED_BYTES    = 86,
+    V224_AF_TRACE_CAP         = 256,
+    V224_PF_TRACE_CAP         = 128,
+    V224_FREEZE_PRE           = 48,
+    V224_FREEZE_POST          = 16,
+    V224_FREEZE_CAP           = 64,
+    V224_FX_LRU_SLOTS         = 8,
 };
+
+enum {
+    BODY_CAP_CMD03_BIT = (1U << 0U),
+    BODY_CAP_CMD23_BIT = (1U << 1U),
+    BODY_CAP_CMD24_BIT = (1U << 2U),
+    BODY_CAP_CMD28_BIT = (1U << 3U),
+    BODY_CAP_CMD31_BIT = (1U << 4U),
+    BODY_CAP_CMD39_BIT = (1U << 5U),
+    BODY_CAP_CMDE8_BIT = (1U << 6U),
+};
+
+typedef enum {
+    DIST_STATE_VALID        = 0,
+    DIST_STATE_SUSPECT      = 1,
+    DIST_STATE_DEGRADED_KIN = 2,
+    DIST_STATE_INVALID      = 3,
+} e_dist_state_t;
 
 /* =========================================================================
  * Lens Brand & Actuator Classification
@@ -82,6 +106,7 @@ typedef enum {
     LENS_BRAND_TAMRON  = 3,
     LENS_BRAND_SAMYANG = 4,
     LENS_BRAND_ZEISS   = 5,
+    LENS_BRAND_VILTROX = 6,
 } lens_brand_t;
 
 typedef enum {
@@ -634,6 +659,120 @@ typedef struct {
     uint8_t               parfocal_anchor_refresh;
     uint8_t               parfocal_e0_coast_rem;
     uint8_t               id05_fresh_since_06;
+
+    /* V2.24 Extension State (strictly appended at tail so prior offsets never shift) */
+    struct {
+        /* Module 1: AF-S / CDAF convergence & transaction accounting */
+        uint8_t  txn_owner_cmd;
+        uint8_t  cdaf_min_pulse_se;
+        uint8_t  cdaf_stall_frames;
+        uint8_t  landing_redrive_count;
+        uint8_t  latched_abort_submode;
+        uint8_t  last_step_dir_sign;
+        uint8_t  macro_reversal_active;
+        uint8_t  dist_state;
+        int32_t  progress_anchor_se;
+        int32_t  last_prev_pos_se;
+        uint16_t txn_start_ms_x10;
+        uint16_t macro_reversal_ms_x10;
+        uint32_t last_stall_txn_seq;
+
+        /* Module 2: Sub-tick Parfocal & divergence fuse */
+        int32_t  anchor_x_q8;
+        int32_t  parfocal_last_err_abs;
+        uint8_t  parfocal_diverge_count;
+        uint8_t  parfocal_fuse_latched;
+        uint16_t parfocal_last_slew_f01;
+
+        /* Module 3: KB-19 Single-Writer Distance State Machine */
+        uint8_t  dist_good_streak;
+        uint8_t  af_or_shutter_seen;
+        uint16_t dist_last_raw_x;
+        uint16_t dist_last_valid_raw_x;
+        uint16_t ds13_owner_lid;
+        float    last_known_dist_m;
+
+        /* Primes P4, Hot-Swap H1-H4, DX->FX & Body Fingerprint */
+        uint32_t phase2_tc_epoch;
+        uint32_t phase2_tc_opt_gen;
+        uint32_t delivered_snap_sig;
+        uint32_t body_cap_flags;
+        uint16_t phase2_reattach_tries;
+        uint16_t ds13_owner_fmin;
+        uint16_t ds13_owner_av;
+        uint16_t lfn_hold_start_ms_x10;
+        uint16_t mount_ready_ms_x10;
+        uint16_t lfn_hold_toggled_epoch;
+        uint16_t af_reproj_f01;
+        uint8_t  z_advertise_fx;
+        uint8_t  raw_cmd3f_len;
+        char     raw_cmd3f_name[LENS_NAME_ASCII_CAP];
+        uint8_t  v224_bb_v2_parked_done;
+        uint8_t  lfn_hold_active;
+        uint16_t af_stall_abort_total;
+        uint32_t current_opt_gen;
+        uint32_t delivered_opt_epoch;
+        uint32_t delivered_opt_gen;
+        uint16_t vig_fit_p_cur;
+        uint8_t  reserved_spoof_pad;
+        uint8_t  v224_cdaf_consecutive_stalls;
+        uint64_t txn_start_ticks;
+        uint64_t macro_reversal_ticks;
+        uint32_t txn_seq;
+        uint16_t parfocal_last_cl_err_q8;
+        uint8_t  parfocal_last_cl_dir;
+        uint8_t  parfocal_cl_responded_pending;
+        int32_t  dist_stall_ref_se;
+        uint8_t  dist_stall_votes;
+        int8_t   dist_recover_dir;
+        uint8_t  af_reversal_damp_rem;
+        uint8_t  parfocal_ff_use_dx;
+        uint32_t lfn_arm_start_ms;
+        uint32_t lfn_hold_start_ms;
+        int32_t  parfocal_last_cl_cz;
+        uint8_t  lfn_window_closed;
+        uint8_t  parfocal_diverge_rearmed;
+        uint16_t prev_zoom_norm;
+
+        /* Post-audit V2.24 safety, wire parity & rate-commit tail extensions */
+        uint64_t wall_now_ticks;
+        uint64_t last_rx06_wall_ticks;
+        uint64_t last_valid_pair_ticks;
+        uint32_t id06_sample_seq;
+        uint32_t dist_last_id06_seq;
+        int32_t  c1_fourth_word_s32;
+        uint32_t ec_word2_u32;
+        int32_t  ee_t1_s32;
+        uint32_t rate_epoch;
+        uint8_t  accepted_af_cookie;
+        uint8_t  last_c1_flags;
+        uint8_t  last_ec_flags;
+        uint8_t  ee_order_u8;
+        uint8_t  e0_idle_latched;
+        uint8_t  park_completed_by_timeout;
+        uint8_t  fallback_60hz_latched;
+        uint8_t  pending_vsync_hz;
+        uint8_t  id04_no_rx06_vsyncs;
+        uint8_t  e_pair_err_streak;
+        uint8_t  e_feedback_unhealthy;
+        uint8_t  unhealthy_settle_streak;
+        uint32_t drive_ep_start_t256;
+        uint64_t last_rx05_wall_ticks;
+        uint64_t last_comm_pair_ticks;
+        uint64_t link_grace_ticks;
+        int32_t  unhealthy_settle_se;
+        int16_t  parfocal_inf_cz_off;
+        uint8_t  zoom_guard_vsyncs;
+        uint8_t  zoom_frame_flag;
+        uint8_t  parfocal_research_enable;
+        uint8_t  post_0c_rx_seen;
+        uint8_t  baud_fallback_done;
+        uint8_t  tx3d_drive_valid;
+        int8_t   cam_mf_pending_dir;
+        uint8_t  cam_mf_pending_streak;
+        uint16_t force_750k_lid;
+        uint16_t tx3d_drive_word;
+    } v224;
 } adapter_ctx_t;
 
 /* =========================================================================
@@ -656,10 +795,75 @@ static const uint16_t BB_EVT_OPTICS_DISCONNECTED = 0x000DU;
 static const uint16_t BB_EVT_DIST_FALLBACK   = 0x000EU;
 static const uint16_t BB_EVT_SESSION_SUMMARY = 0x000FU;
 static const uint16_t BB_EVT_PERF_OPTICS     = 0x0010U;
+static const uint16_t BB_EVT_E_BAUD_FALLBACK = 0x0011U;
+static const uint16_t BB_EVT_HS_CAPS         = 0x0012U;
 static const uint16_t BB_EVT_E_PROTO_ERR     = 0x00E1U;
 static const uint16_t BB_EVT_Z_HDR_CSUM_ERR  = 0x00E2U;
 static const uint16_t BB_EVT_AF_STALL_ABORT  = 0x00E3U;
+static const uint16_t BB_EVT_V2_AF_SUMMARY   = 0x00B0U;
+static const uint16_t BB_EVT_V2_PF_SUMMARY   = 0x00B1U;
+static const uint16_t BB_EVT_V2_DIST_SUMMARY = 0x00B2U;
+static const uint16_t BB_EVT_V2_FREEZE_META  = 0x00B3U;
+static const uint16_t BB_EVT_V2_BODY_ID      = 0x00B4U;
+static const uint16_t BB_EVT_V2_PHASE2_OPT   = 0x00B5U;
 static const uint16_t BB_EVT_HARDFAULT       = 0x00FFU;
+
+static const uint32_t FX_LRU_MAGIC_TAG       = 0x46584C52UL; /* "FXLR" */
+
+typedef struct {
+    uint32_t ts_ms_x10;
+    int16_t  pos_se;
+    int16_t  tgt_se;
+    int16_t  step_se;
+    uint16_t defocus_mag;
+    uint8_t  owner_cmd;
+    uint8_t  submode;
+    uint8_t  flags;
+    uint8_t  stall_frames;
+} v224_af_trace_entry_t;
+
+enum {
+    V224_AF_TRACE_ENTRY_BYTES = 16U,
+};
+_Static_assert(sizeof(v224_af_trace_entry_t) == V224_AF_TRACE_ENTRY_BYTES, "v224_af_trace_entry_t must be 16 bytes");
+
+typedef struct {
+    uint32_t ts_ms_x10;
+    uint16_t focal_0p1mm;
+    uint16_t dist_raw_x;
+    int32_t  anchor_q8;
+    int16_t  trim_cz;
+    int16_t  err_se;
+} v224_parfocal_trace_entry_t;
+
+enum {
+    V224_PARFOCAL_TRACE_ENTRY_BYTES = 16U,
+};
+_Static_assert(sizeof(v224_parfocal_trace_entry_t) == V224_PARFOCAL_TRACE_ENTRY_BYTES, "v224_parfocal_trace_entry_t must be 16 bytes");
+
+typedef struct {
+    uint16_t e_lid;
+    uint16_t f_min_mm;
+    uint16_t av_open_x100;
+    uint8_t  fx_enable;
+    uint8_t  age_rank;
+} v224_fx_lru_entry_t;
+
+enum {
+    V224_FX_LRU_ENTRY_BYTES = 8U,
+};
+_Static_assert(sizeof(v224_fx_lru_entry_t) == V224_FX_LRU_ENTRY_BYTES, "v224_fx_lru_entry_t must be 8 bytes");
+
+typedef struct {
+    uint32_t            magic;
+    uint16_t            seq;
+    uint8_t             count;
+    uint8_t             pad;
+    v224_fx_lru_entry_t slots[V224_FX_LRU_SLOTS];
+    uint32_t            crc32;
+} v224_fx_lru_table_t;
+
+_Static_assert(sizeof(v224_fx_lru_table_t) <= JOURNAL_RESERVED_BYTES, "v224_fx_lru_table_t must fit journal reserved_cfg");
 
 static const uint32_t JOURNAL_MAGIC_TAG      = 0x425A4A4EUL; /* "BZJN" */
 static const uint32_t JOURNAL_COMMIT_MARK    = 0x434F4D54UL; /* "COMT" */
@@ -794,8 +998,11 @@ size_t lens_session_build_id04_wire(adapter_ctx_t *ctx, uint8_t *out_wire, uint8
 void lens_session_push_diag(adapter_ctx_t *ctx, uint16_t code,
                             uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3);
 bool lens_session_pop_diag(adapter_ctx_t *ctx, bb_event_input_t *out_evt);
+void lens_session_apply_body_vsync_hz(adapter_ctx_t *ctx, uint8_t body_hz);
 
 /* af_servo_bridge.c */
+void af_servo_set_parfocal_research_mode(adapter_ctx_t *ctx, uint8_t enable);
+void af_servo_note_wall_ticks(adapter_ctx_t *ctx, uint64_t now_ticks);
 void af_servo_configure_for_lens(adapter_ctx_t *ctx);
 float af_servo_effective_mfd_meters(const adapter_ctx_t *ctx);
 void af_servo_refresh_kz(adapter_ctx_t *ctx);
@@ -859,12 +1066,44 @@ void optics_ingest_lf_page(adapter_ctx_t *ctx, optics_workspace_t *optics,
 float optics_eval_sony_ds13_focal_mm(const adapter_ctx_t *ctx, const optics_workspace_t *optics,
                                      float nominal_f_mm);
 uint16_t optics_compute_a3_q14(const adapter_ctx_t *ctx, const optics_workspace_t *optics);
+bool optics_unpack_tamron_cmd24_ab(int16_t tamron_z_idx, uint8_t *buf_a, uint8_t *buf_b);
 
 /* z_snapshot_builder.c */
 void z_snapshot_publish(adapter_ctx_t *ctx, const optics_workspace_t *optics);
 size_t z_dispatch_command_ram_safe(adapter_ctx_t *ctx, const optics_workspace_t *optics,
                                    const z_cmd_req_t *req, uint8_t *small_tx_buf,
                                    const uint8_t **out_direct_ptr);
+uint32_t z_snapshot_compute_sig(const adapter_ctx_t *ctx);
+
+/* Host/MCU V2.24 Journal FX LRU & SRAM3 Trace APIs */
+typedef struct {
+    uint16_t e_lid;
+    uint16_t f_min_mm;
+    uint16_t av_open_x100;
+} v224_fx_lru_key_t;
+
+typedef struct {
+    uint16_t af_cnt;
+    uint16_t pf_cnt;
+    uint16_t freeze_cnt;
+    uint16_t freeze_pre_cnt;
+    uint16_t freeze_written;
+    uint16_t freeze_drops;
+    uint8_t  freeze_reason;
+} v224_trace_counts_t;
+
+void journal_fx_lru_init(void);
+uint8_t journal_fx_lru_lookup(const v224_fx_lru_key_t *key);
+void journal_fx_lru_set(const v224_fx_lru_key_t *key, uint8_t fx_enable);
+uint16_t journal_sector_slot_cap(uint32_t sector_base);
+void v224_trace_reset(void);
+void v224_trace_af_push(const v224_af_trace_entry_t *entry);
+void v224_trace_parfocal_push(const v224_parfocal_trace_entry_t *entry);
+void v224_trace_freeze_trigger(uint8_t reason_code);
+void v224_trace_get_counts(v224_trace_counts_t *out_counts);
+uint16_t v224_trace_read_af_ring(v224_af_trace_entry_t *out_entries, uint16_t max_entries);
+uint16_t v224_trace_read_pf_ring(v224_parfocal_trace_entry_t *out_entries, uint16_t max_entries);
+uint16_t v224_trace_read_freeze(v224_af_trace_entry_t *out_entries, uint16_t max_entries);
 
 #ifdef __cplusplus
 }

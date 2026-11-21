@@ -1,19 +1,22 @@
 #include "../../include/hc32f460_regs.h"
 
-static const uint8_t  NVIC_PRIO_TMRA1_OVF = (uint8_t)(3U << 4U);
+static const uint8_t  NVIC_PRIO_TMRA1_OVF = (uint8_t)(1U << 4U);
 static const uint32_t IRQ82_REG_IDX       = 82UL / 32UL;
 static const uint32_t IRQ82_BIT_MASK      = 1UL << (82UL % 32UL);
 static const uint16_t TMRA_FULL_PERIOD    = 0xFFFFU;
 static const uint16_t TMRA_HALF_PERIOD    = 0x8000U;
 static const uint32_t EPOCH_SHIFT_BITS    = 16U;
+static const uint32_t U32_SHIFT_BITS      = 32U;
 static const uint64_t WORD_LO_MASK        = 0xFFFFULL;
 static const uint64_t US_PER_EPOCH_FACTOR = 21845ULL;
 static const uint64_t US_ROUND_HALF       = 32768ULL;
 
-static volatile uint32_t g_tmra1_epoch = 0U;
+static volatile uint32_t g_tmra1_epoch    = 0U;
+static volatile uint32_t s_tmra1_epoch_hi = 0U;
 
 void tmra1_clock_init(void) {
     g_tmra1_epoch = 0U;
+    s_tmra1_epoch_hi = 0U;
 
     /* Split 8-bit BCSTRL/BCSTRH: clear START=0 and CKDIV=0 BEFORE writing CNTER,
      * then configure PCLK1/32 = 3.000 MHz */
@@ -33,30 +36,37 @@ void tmra1_clock_init(void) {
 }
 
 BORYOZA_RAMFUNC void TMRA1_OVF_IRQHandler(void) {
+    uint32_t primask = cpu_irq_save();
     uint8_t bcstrh = mmio_r8(tmra_bcstrh_addr(TMRA1_BASE_ADDR));
     if ((bcstrh & TMRA_BCSTRH_OVFF) != 0U) {
+        uint32_t next_lo = g_tmra1_epoch + 1U;
+        g_tmra1_epoch = next_lo;
+        if (next_lo == 0U) {
+            s_tmra1_epoch_hi = s_tmra1_epoch_hi + 1U;
+        }
         /* W0C on OVFF (bit6) while keeping UDFF (bit7) high and ITENOVF (bit4) enabled */
         mmio_w8(tmra_bcstrh_addr(TMRA1_BASE_ADDR),
                 (uint8_t)(((uint32_t)bcstrh | (uint32_t)TMRA_BCSTRH_UDFF_KEEP) &
                           ~(uint32_t)TMRA_BCSTRH_OVFF));
-        g_tmra1_epoch = g_tmra1_epoch + 1U;
     }
     cpu_dsb_isb();
+    cpu_irq_restore(primask);
 }
 
 BORYOZA_RAMFUNC uint64_t tmra1_now_ticks(void) {
-    for (;;) {
-        uint32_t epoch_hi1 = g_tmra1_epoch;
-        uint16_t cnt_lo = mmio_r16(tmra_cnter_addr(TMRA1_BASE_ADDR));
-        uint8_t bcstrh = mmio_r8(tmra_bcstrh_addr(TMRA1_BASE_ADDR));
-        uint32_t epoch_hi2 = g_tmra1_epoch;
-        if (epoch_hi1 == epoch_hi2) {
-            if (((bcstrh & TMRA_BCSTRH_OVFF) != 0U) && (cnt_lo < TMRA_HALF_PERIOD)) {
-                epoch_hi1 += 1U;
-            }
-            return (((uint64_t)epoch_hi1) << EPOCH_SHIFT_BITS) | (uint64_t)cnt_lo;
+    uint32_t primask = cpu_irq_save();
+    uint64_t epoch_hi = ((uint64_t)s_tmra1_epoch_hi << U32_SHIFT_BITS) |
+                        (uint64_t)g_tmra1_epoch;
+    uint16_t cnt_lo = mmio_r16(tmra_cnter_addr(TMRA1_BASE_ADDR));
+    uint8_t bcstrh = mmio_r8(tmra_bcstrh_addr(TMRA1_BASE_ADDR));
+    if ((bcstrh & TMRA_BCSTRH_OVFF) != 0U) {
+        cnt_lo = mmio_r16(tmra_cnter_addr(TMRA1_BASE_ADDR));
+        if (cnt_lo < TMRA_HALF_PERIOD) {
+            epoch_hi += 1ULL;
         }
     }
+    cpu_irq_restore(primask);
+    return (epoch_hi << EPOCH_SHIFT_BITS) | (uint64_t)cnt_lo;
 }
 
 BORYOZA_RAMFUNC uint32_t tmra1_now_us32(void) {

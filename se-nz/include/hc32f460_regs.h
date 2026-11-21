@@ -93,13 +93,14 @@ BORYOZA_FORCE_INLINE void cpu_irq_enable(void) {
 /* =========================================================================
  * Physical Flash & 5-Bank SRAM Memory Map
  * ========================================================================= */
-static const uint32_t HC32_FLASH_APP_BASE       = 0x00010000UL;
-static const uint32_t HC32_FLASH_APP_END        = 0x00060000UL;
-static const uint32_t HC32_FLASH_BLACKBOX_BASE  = 0x0007A000UL;
-static const uint32_t HC32_FLASH_BLACKBOX_BYTES = 0x00002000UL;
-static const uint32_t HC32_FLASH_JOURNAL_A_BASE = 0x0007C000UL;
-static const uint32_t HC32_FLASH_JOURNAL_B_BASE = 0x0007E000UL;
-static const uint32_t HC32_FLASH_SECTOR_BYTES   = 0x00002000UL;
+static const uint32_t HC32_FLASH_APP_BASE          = 0x00010000UL;
+static const uint32_t HC32_FLASH_APP_END           = 0x00060000UL;
+static const uint32_t HC32_FLASH_JOURNAL_PONG_BASE = 0x00078000UL;
+static const uint32_t HC32_FLASH_BLACKBOX_BASE     = 0x0007A000UL;
+static const uint32_t HC32_FLASH_BLACKBOX_BYTES    = 0x00002000UL;
+static const uint32_t HC32_FLASH_JOURNAL_A_BASE    = 0x0007C000UL;
+static const uint32_t HC32_FLASH_JOURNAL_B_BASE    = 0x0007E000UL;
+static const uint32_t HC32_FLASH_SECTOR_BYTES      = 0x00002000UL;
 
 static const uint32_t HC32_SRAMH_BASE           = 0x1FFF8000UL;
 static const uint32_t HC32_SRAMH_VTOR_BASE      = 0x1FFF8000UL;
@@ -617,10 +618,12 @@ uint32_t z_spi3_slave_rx_Window_count(void);
 bool z_spi3_slave_provisional_identity_seen(void);
 void z_spi3_slave_clear_provisional_seen(void);
 bool z_spi3_slave_is_idle_hdr(void);
+bool z_spi3_slave_phase2_busy(void);
 bool z_spi3_slave_phase2_powerdown_seen(void);
 bool z_spi3_slave_cmd51_ready_delivered(void);
 void z_spi3_slave_clear_cmd51_ready(void);
 uint32_t z_spi3_slave_idle_ticks(uint64_t now_ticks);
+uint8_t z_spi3_slave_poll_cmd20_rate_target(const adapter_ctx_t *ctx, uint64_t now_ticks);
 
 void z_spi1_hotline_init(void);
 void z_spi1_hotline_stop(void);
@@ -648,10 +651,14 @@ uint32_t e_tmra4_vsync_count(void);
 uint8_t e_tmra4_vsync_mod240(void);
 uint16_t e_tmra4_vsync_phase_ticks(void);
 uint64_t e_tmra4_last_vd_ticks(void);
+void e_tmra4_vsync_snapshot(uint32_t *out_count, uint8_t *out_mod240,
+                            uint16_t *out_phase_ticks, uint64_t *out_last_edge_ticks);
+uint8_t e_tmra4_vsync_current_hz(void);
 
 void blackbox_init(void);
 int blackbox_record_event(const bb_event_input_t *evt);
 void blackbox_flush_to_flash(void);
+void blackbox_record_v2_park_summary(adapter_ctx_t *ctx);
 void boryoza_hardfault_c_handler(const uint32_t *stack_frame);
 
 void journal_init_and_load(adapter_ctx_t *ctx);

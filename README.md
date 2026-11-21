@@ -21,16 +21,16 @@ Clean-room C17 embedded firmware and host verification tooling for electronic le
 
 | Directory | Converter Target | MCU & SoC Architecture | Current Baseline | Focus & Protocol Scope |
 |---|---|---|---|---|
-| [`se-nz/`](se-nz/) | **Sony E → Nikon Z** (`BORYOZA SE-NZ`) | `HC32F460JEUA` (ARM Cortex-M4F @ `192 MHz`, `512 KiB` Flash, `192 KiB` 5-bank SRAM) | **V2.23** (`LF 2.23` / `17 02 0b 1a`) | Full-time closed-loop `dist_code_x` electronic parfocal (`AF-S`/`AF-C`/`Body MF`/`Barrel MF`), `275`-lens catalog, `57` spectral curves, `25` compressed 3D `CMD 0x24` tables, OIS/IBIS split-axis bridge, POR wake & USB MSC `.PUB` flashing |
+| [`se-nz/`](se-nz/) | **Sony E → Nikon Z** (`BORYOZA SE-NZ`) | `HC32F460JEUA` (ARM Cortex-M4F @ `192 MHz`, `512 KiB` Flash, `192 KiB` 5-bank SRAM) | **V2.24** (`LF 2.24` / `18 02 0b 1a`) | Active-AF zoom target reprojection (`0xE4`/`0xE6` 3D-Tracking), `120 Hz` zoom false-MF suppression, `276`-lens catalog, `58` spectral curves, `92` compressed 3D `CMD 0x24` tables, OIS/IBIS split-axis bridge, POR wake & USB MSC `.PUB` flashing |
 
-### Key Engineering Capabilities (`se-nz/` V2.23)
+### Key Engineering Capabilities (`se-nz/` V2.24)
 
-- **Zero-Calibration Full-Time Electronic Parfocal**: Combines a real-time thin-lens feed-forward model with logarithmic `ID 0x05 dist_code_x` residual closed-loop trimming across `AF-S`, `AF-C`, `Body MF`, and `Barrel MF` modes (`60 Hz` and `120 Hz`), with `ID 0x06 <-> ID 0x05` frame pairing, `C0 -> E0` motor coast protection, and automatic idle `ID 0x04[9] = 0x81` settling release for EVF focus peaking and magnification.
+- **Closed-Loop AF, Zoom Reprojection & Hotline Tracking**: Active-AF (`0xE4`/`0xE6` 3D-Tracking) dynamic zoom target reprojection with post-zoom `500 Hz` `SPI1` hotline interpolation, `30–60 Hz` varifocal cam-step false-MF suppression on `120 Hz` zoom barrels, `Body MF` active `0x1C` brake (`0x83`) with automatic `ID 0x04[9] = 0x81` settling release, plus opt-in `dist_code_x` closed-loop electronic parfocal (`af_servo_set_parfocal_research_mode`).
 - **Deterministic Real-Time Split (`HC32F460JEUA`)**:
   - `SRAMH` `.ramfunc` ISRs (`SPI3` Z-mount slave, `SPI1` `1 kHz` hotline, `USART1` E-mount DMA, `TMRA4` VSync, `EFM` flash ops) strictly compile with `-mgeneral-regs-only -fno-tree-vectorize -fno-builtin`, enforced at pack time by `pack_pub.py` (`0` VFP instructions and `0` Flash closure leaks).
   - Pure C17 protocol & optical translation core (`se-nz/src/02_core/*.c`) shared verbatim between bare-metal ARM Flash builds and host macOS/Linux ASan+UBSan shared libraries (`libboryoza_core`).
-- **On-Board Optical & Spectral Engine**: Includes `275` lens catalog entries, `57` delta-nibble compressed 81-point spectral transmission curves, `25` sparse/Huffman-compressed 3D `CMD 0x24` A/B optical profiles decompressed on the fly into `SRAM2`, plus live `ID 0x05` curve decoding for supported fixed-focal lenses.
-- **Fail-Safe Field Diagnostics**: Dual-bank `8 KiB` `Ping/Pong` atomic parameter journal (`0x7C000..0x7FFFF`), `256 × 32 B` CRT/CRC32 ring blackbox (`0x7A000..0x7BFFF`) with wear-out circuit breakers, `4 KiB` `Ret_SRAM` warm-restart cache, `PA0` zero-backfeed `0V` sleep/POR wake recovery, and contiguous FAT12 USB MSC flashing (`se-nz/tools/flash_usb_bor.py`).
+- **On-Board Optical & Spectral Engine**: Includes `276` lens catalog entries, `58` delta-nibble compressed 81-point spectral transmission curves, `92` sparse/Huffman-compressed 3D `CMD 0x24` A/B optical profiles decompressed on the fly into `SRAM2`, plus live `ID 0x05` curve decoding for supported fixed-focal lenses.
+- **Fail-Safe Field Diagnostics**: Dual-bank `8 KiB` `Ping/Pong` atomic parameter journal (`JNL_PONG` `0x78000` + `JNL_A` `0x7C000`, plus read-only legacy `JNL_B` `0x7E000`) with `FX/DX` LRU state, `256 × 32 B` `CRC32` ring blackbox (`0x7A000..0x7BFFF`) with wear-out circuit breakers, `4 KiB` `Ret_SRAM` warm-restart cache, `PA0` zero-backfeed `0V` sleep/POR wake recovery, and contiguous FAT12 USB MSC flashing (`se-nz/tools/flash_usb_bor.py`).
 
 ### Quick Start (`se-nz`)
 
@@ -53,15 +53,15 @@ make test
 make clean
 ```
 
-All built binaries reside in `se-nz/build/` (`BORYOZA_V223.PUB` is bounded strictly by the physical `[0x00010000, 0x00060000)` `320 KiB` APP Flash partition — `program_end <= 0x00060000`, `<= 327,680 B`).
+All built binaries reside in `se-nz/build/` (`BORYOZA_V224.PUB` is bounded strictly by the physical `[0x00010000, 0x00060000)` `320 KiB` APP Flash partition — `program_end <= 0x00060000`, `<= 327,680 B`).
 
 #### Flash & Read Field Telemetry Over USB MSC
 
 1. Connect the converter in USB bootloader mode so the `BOR` FAT12 volume mounts (`/Volumes/BOR     ` on macOS, or a mounted block directory on Linux):
    ```sh
-   python3 se-nz/tools/flash_usb_bor.py --pub se-nz/build/BORYOZA_V223.PUB
+   python3 se-nz/tools/flash_usb_bor.py --pub se-nz/build/BORYOZA_V224.PUB
    ```
-2. Extract and decode Blackbox (`LBA 858..873`) + Journal (`LBA 874..905`) logs:
+2. Extract and decode Journal Pong (`LBA 842..857`) + Blackbox (`LBA 858..873`) + Journal A/B (`LBA 874..905`) logs:
    ```sh
    python3 se-nz/tools/dump_usb_blackbox.py --out telemetry.json
    ```
@@ -120,16 +120,16 @@ See [`docs/README.md`](docs/README.md) for the complete documentation library, [
 
 | 目录 | 转接环目标 | 主控架构与存储 | 当前基线 | 核心协议与特性范围 |
 |---|---|---|---|---|
-| [`se-nz/`](se-nz/) | **Sony E → Nikon Z**（`BORYOZA SE-NZ`） | `HC32F460JEUA`（ARM Cortex-M4F @ `192 MHz`，`512 KiB` Flash，`192 KiB` 五段 SRAM） | **V2.23**（`LF 2.23` / `17 02 0b 1a`） | 全时闭环 `dist_code_x` 电子齐焦（`AF-S`/`AF-C`/`机身 MF`/`镜身 MF`）、`275` 项镜头目录、`57` 条光谱曲线、`25` 组压缩 3D `CMD 0x24` 光学表、OIS/IBIS 协同、POR 闭环唤醒与 USB MSC `.PUB` 升级 |
+| [`se-nz/`](se-nz/) | **Sony E → Nikon Z**（`BORYOZA SE-NZ`） | `HC32F460JEUA`（ARM Cortex-M4F @ `192 MHz`，`512 KiB` Flash，`192 KiB` 五段 SRAM） | **V2.24**（`LF 2.24` / `18 02 0b 1a`） | 主动追焦变焦目标重投影（`0xE4`/`0xE6` 3D 追踪）、`120 Hz` 变焦误触发 MF 抑制、`276` 项镜头目录、`58` 条光谱曲线、`92` 组压缩 3D `CMD 0x24` 光学表、OIS/IBIS 协同、POR 闭环唤醒与 USB MSC `.PUB` 升级 |
 
-### 核心工程特性（`se-nz/` V2.23）
+### 核心工程特性（`se-nz/` V2.24）
 
-- **零标定全时闭环电子齐焦**：结合薄透镜前馈模型与 `ID 0x05 dist_code_x` 对数分档误差反馈闭环，覆盖 `AF-S`、`AF-C`、`机身 MF` 与`镜身 MF` 全模式及 `60/120 Hz` 刷新率；配备 `ID 0x06 <-> ID 0x05` 采样配对、`C0 -> E0` 滑行保护与 `机身 MF` 主动制动 `0x83 + 0x1C` 逻辑，停稳后自动将 `ID 0x04[9]` 释放回 `0x81` 以支持机身放大对焦与峰值提示。
+- **闭环追焦、变焦重投影与热线内插**：支持主动追焦（`0xE4`/`0xE6` 3D 追踪）期间动态变焦目标重投影与变焦后 `500 Hz` `SPI1` 热线平滑内插、抑制 `120 Hz` 变焦镜筒 `30–60 Hz` 凸轮步进引发的虚假 MF 标尺触发、保留 `机身 MF` 主动制动 `0x83 + 0x1C` 并在停稳后将 `ID 0x04[9]` 释放回 `0x81`，同时将闲置 `dist_code_x` 闭环电子齐焦收归按需研究开关（`af_servo_set_parfocal_research_mode`）。
 - **硬实时零浮点分区与软硬同源**：
   - `SRAMH` `.ramfunc` 与全部中断/HAL/传输层函数强制 `-mgeneral-regs-only -fno-tree-vectorize -fno-builtin`，打包工具 `pack_pub.py` 静态扫查零 `VFP` 指令、零 `RAM/EFM` 闭包越界及零 `64-bit` 软除法依赖。
   - 核心逻辑 `se-nz/src/02_core/*.c` 与主机 `macOS`/`Linux` ASan+UBSan 动态库（`libboryoza_core`）共用同一份纯 C17 源码。
-- **片上压缩光学与光谱引擎**：内置 `275` 项镜头识别目录、`57` 条 81 点光谱透过率曲线、`25` 组稀疏/Huffman 压缩 `CMD 0x24` A+B 三维光学校正表（运行期双缓冲解压至 `SRAM2`），并支持实时 `ID 0x05` 曲线解码。
-- **掉电安全与现场黑匣子诊断**：配备 `Ping/Pong` 双扇区 `128 B` 原子参数日志（`0x7C000..0x7FFFF`）、`256 × 32 B` `CRC32` 飞行黑匣子（`0x7A000..0x7BFFF`）与坏块熔断保护、`4 KiB` `Ret_SRAM` 热启动缓存、`PA0` 零倒灌关机与 `PA9=1` POR 唤醒恢复，以及连续簇 FAT12 USB MSC 刷机工具（`se-nz/tools/flash_usb_bor.py`）。
+- **片上压缩光学与光谱引擎**：内置 `276` 项镜头识别目录、`58` 条 81 点光谱透过率曲线、`92` 组稀疏/Huffman 压缩 `CMD 0x24` A+B 三维光学校正表（运行期双缓冲解压至 `SRAM2`），并支持实时 `ID 0x05` 曲线解码。
+- **掉电安全与现场黑匣子诊断**：配备 `Ping/Pong` 双扇区 `128 B` 原子参数日志（`JNL_PONG` `0x78000` + `JNL_A` `0x7C000`，兼容只读历史 `JNL_B` `0x7E000`）与 `FX/DX` LRU 记忆、`256 × 32 B` `CRC32` 飞行黑匣子（`0x7A000..0x7BFFF`）与坏块熔断保护、`4 KiB` `Ret_SRAM` 热启动缓存、`PA0` 零倒灌关机与 `PA9=1` POR 唤醒恢复，以及连续簇 FAT12 USB MSC 刷机工具（`se-nz/tools/flash_usb_bor.py`）。
 
 ### 快速上手（`se-nz`）
 

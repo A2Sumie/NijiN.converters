@@ -66,7 +66,7 @@ ALL_MCU_OBJS := $(HAL_OBJS) $(TRANS_OBJS) $(CORE_OBJS) $(DIAG_OBJS) $(MAIN_OBJ)
 ELF_OUT     := $(BUILD_DIR)/BORYOZA_V200.elf
 BIN_OUT     := $(BUILD_DIR)/BORYOZA_V200.bin
 PUB_OUT     := $(BUILD_DIR)/BORYOZA_V200.PUB
-PUB_V223    := $(BUILD_DIR)/BORYOZA_V223.PUB
+PUB_V224    := $(BUILD_DIR)/BORYOZA_V224.PUB
 SIL_LIB     := $(BUILD_DIR)/libboryoza_core.$(SHLIB_EXT)
 GEN_HDR     := $(INC_DIR)/lens_db_generated.h
 
@@ -98,7 +98,7 @@ $(ELF_OUT): $(ALL_MCU_OBJS) $(LD_SCRIPT)
 
 $(PUB_OUT) $(BIN_OUT): $(ELF_OUT) tools/pack_pub.py
 	$(PYTHON) tools/pack_pub.py --elf $(ELF_OUT) --bin $(BIN_OUT) --pub $(PUB_OUT) --objcopy $(ARM_OBJCOPY) --objdump $(ARM_OBJDUMP)
-	cp -f $(PUB_OUT) $(PUB_V223)
+	cp -f $(PUB_OUT) $(PUB_V224)
 
 mcu: $(PUB_OUT)
 

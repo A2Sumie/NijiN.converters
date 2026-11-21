@@ -58,6 +58,26 @@ static void put_s32_le(uint8_t *dst, int32_t val) {
     dst[3] = (uint8_t)((uval >> SHIFT_24) & BYTE_MASK);
 }
 
+static bool z_dist_is_unknown(const adapter_ctx_t *ctx) {
+    if (ctx->dist_report_invalid == 0U) {
+        return false;
+    }
+    if ((ctx->v224.dist_state == (uint8_t)DIST_STATE_DEGRADED_KIN) &&
+        (ctx->id06.valid != 0U) && (ctx->af.cur_cz > 0) &&
+        (ctx->af.mech_hz > 0) && (ctx->af.e_inf_true != ctx->af.e_near_true)) {
+        return false;
+    }
+    return true;
+}
+
+static uint16_t snapshot_focal_int_mm(const adapter_ctx_t *ctx) {
+    static const uint16_t MIN_NOMINAL_F01 = 40U;
+    static const uint32_t F01_DIVISOR     = 10UL;
+    return (ctx->id05.f_nom_0p1mm >= MIN_NOMINAL_F01)
+               ? (uint16_t)((uint32_t)ctx->id05.f_nom_0p1mm / F01_DIVISOR)
+               : ctx->f_cur_mm;
+}
+
 /* NOLINTBEGIN(readability-magic-numbers) — Z-mount snapshot wire-byte offsets */
 static void build_cmd10_28b(const adapter_ctx_t *ctx, uint8_t *out28) {
     memset(out28, 0, Z_CMD10_BYTES);
@@ -75,11 +95,11 @@ static void build_cmd10_28b(const adapter_ctx_t *ctx, uint8_t *out28) {
     out28[0x05] = (uint8_t)BORYOZA_LF_BCD_MINOR;
     out28[0x06] = (uint8_t)BORYOZA_LF_BCD_MAJOR;
 
-    out28[0x07] = (ctx->dist_report_invalid != 0U) ? 0x00U : 0x01U;
+    out28[0x07] = z_dist_is_unknown(ctx) ? 0x00U : 0x01U;
     out28[0x08] = 0x00U;
 
     uint32_t fmt_flags = 0x00UL;
-    if (ctx->is_apsc != 0U) {
+    if ((ctx->is_apsc != 0U) && (ctx->v224.z_advertise_fx == 0U)) {
         fmt_flags |= 0x10UL;
     }
     if (ctx->is_macro != 0U) {
@@ -115,11 +135,12 @@ static void build_cmd11_74b(const adapter_ctx_t *ctx, uint8_t *out74) {
 }
 
 static void build_cmd12_66b(const adapter_ctx_t *ctx, uint8_t *out66) {
+    uint16_t f_int_cur = snapshot_focal_int_mm(ctx);
     memset(out66, 0, Z_CMD12_BYTES);
     put_u16_le(&out66[0x01], ctx->ap.c_open_wide);
     put_u16_le(&out66[0x03], ctx->ap.c_open_tele);
-    put_u16_le(&out66[0x07], ctx->f_cur_mm);
-    put_u16_le(&out66[0x0B], ctx->f_cur_mm);
+    put_u16_le(&out66[0x07], f_int_cur);
+    put_u16_le(&out66[0x0B], f_int_cur);
     put_u16_le(&out66[0x0D], EXIT_PUPIL_WIDE_DEF);
     put_u16_le(&out66[0x0F], EXIT_PUPIL_TELE_DEF);
 
@@ -137,7 +158,7 @@ static void build_cmd12_66b(const adapter_ctx_t *ctx, uint8_t *out66) {
     put_u16_le(&out66[0x2B], ctx->f_min_mm);
     put_u16_le(&out66[0x2D], 0x0000U);
     put_u16_le(&out66[0x2F], ctx->f_max_mm);
-    put_u16_le(&out66[0x31], (ctx->dist_report_invalid != 0U) ? 0x0000U : MF_BUCKET_MAX);
+    put_u16_le(&out66[0x31], z_dist_is_unknown(ctx) ? 0x0000U : MF_BUCKET_MAX);
     put_u16_le(&out66[0x33], 0x0000U);
 
     out66[0x39] = ctx->vr.z_vr_cap0;
@@ -150,9 +171,9 @@ static void build_cmd20_01_24b(const adapter_ctx_t *ctx, uint8_t *out24) {
     memset(out24, 0, Z_CMD20_01_BYTES);
     put_u16_le(&out24[0x01], ctx->ap.c_open_cur);
     put_u16_le(&out24[0x03], ctx->ap.c_cur);
-    put_u16_le(&out24[0x07], ctx->f_cur_mm);
-    put_u16_le(&out24[0x09], (ctx->dist_report_invalid != 0U) ? 0x0000U : MF_BUCKET_MAX);
-    put_u16_le(&out24[0x0B], (ctx->dist_report_invalid != 0U) ? 0x0000U : ctx->ap.z_alt_k_bucket);
+    put_u16_le(&out24[0x07], snapshot_focal_int_mm(ctx));
+    put_u16_le(&out24[0x09], z_dist_is_unknown(ctx) ? 0x0000U : MF_BUCKET_MAX);
+    put_u16_le(&out24[0x0B], z_dist_is_unknown(ctx) ? 0x0000U : ctx->ap.z_alt_k_bucket);
     put_u16_le(&out24[0x0D], 0xFFFEU);
     put_u16_le(&out24[0x0F], 0xFFFEU);
     put_u16_le(&out24[0x11], 0xFFFEU);
@@ -164,6 +185,7 @@ static void write_cmd20_pupil_block(const adapter_ctx_t *ctx, uint8_t *out258) {
     uint16_t ep_av = (ctx->ap.c_open_cur != 0U) ? ctx->ap.c_open_cur : ctx->ap.c_cur;
     bool fast_sony_tele = (bool)((ctx->brand == (lens_brand_t)SONY_BRAND_ID) &&
                                  (ctx->f_cur_mm >= FAST_TELE_MIN_FOCAL_MM) &&
+                                 (ctx->ap.c_open_cur != 0U) &&
                                  (ctx->ap.c_open_cur <= FAST_TELE_MAX_OPEN_AV));
     put_u16_le(&out258[0x11], ep_code);
     put_u16_le(&out258[0x13], ep_av);
@@ -199,7 +221,7 @@ static void write_cmd20_kz_block(const adapter_ctx_t *ctx, uint8_t *out258) {
 }
 
 static void write_cmd20_mf_and_limits(const adapter_ctx_t *ctx, uint8_t *out258,
-                                      uint16_t f_frac_q16) {
+                                      uint16_t f_int_mm, uint16_t f_frac_q16) {
     if (ctx->af.barrel_limiter_on != 0U) {
         put_u16_le(&out258[0x5D], MF_LIMITER_LO);
         put_u16_le(&out258[0x5F], MF_LIMITER_HI);
@@ -224,9 +246,9 @@ static void write_cmd20_mf_and_limits(const adapter_ctx_t *ctx, uint8_t *out258,
     out258[0xAE] = 0x00U;
 
     put_u16_le(&out258[0xB5], f_frac_q16);
-    put_u16_le(&out258[0xB7], ctx->f_cur_mm);
+    put_u16_le(&out258[0xB7], f_int_mm);
     uint16_t f9_val = MF_BUCKET_MAX;
-    if (ctx->dist_report_invalid != 0U) {
+    if (z_dist_is_unknown(ctx)) {
         f9_val = 0x0000U;
     } else if (ctx->af.barrel_limiter_on != 0U) {
         f9_val = MF_LIMITER_SPAN;
@@ -241,12 +263,13 @@ static void build_cmd20_00_258b(const adapter_ctx_t *ctx, uint8_t *out258) {
     uint32_t f01 = (ctx->id05.f_nom_0p1mm >= 40U)
                        ? (uint32_t)ctx->id05.f_nom_0p1mm
                        : ((uint32_t)ctx->f_cur_mm * 10UL);
+    uint16_t f_int_mm = (uint16_t)(f01 / 10UL);
     uint16_t f_frac_q16 = (uint16_t)(((f01 % 10UL) * 65536UL) / 10UL);
 
     put_u16_le(&out258[0x01], ctx->ap.c_base_reported);
     put_u16_le(&out258[0x09], ctx->ap.c_cur);
     put_u16_le(&out258[0x0B], f_frac_q16);
-    put_u16_le(&out258[0x0D], ctx->f_cur_mm);
+    put_u16_le(&out258[0x0D], f_int_mm);
     put_u16_le(&out258[0x0F], ctx->ap.c_cur);
     write_cmd20_pupil_block(ctx, out258);
 
@@ -293,7 +316,7 @@ static void build_cmd20_00_258b(const adapter_ctx_t *ctx, uint8_t *out258) {
     out258[0xA9] = 0x40U;
     out258[0xAA] = 0x03U;
 
-    write_cmd20_mf_and_limits(ctx, out258, f_frac_q16);
+    write_cmd20_mf_and_limits(ctx, out258, f_int_mm, f_frac_q16);
 
     out258[0xBD] = ctx->z_ring_heartbeat;
     out258[0xBE] = 0x00U;
@@ -372,16 +395,53 @@ static uint32_t hash_c11_identity(const adapter_ctx_t *ctx) {
     return hval;
 }
 
+uint32_t z_snapshot_compute_sig(const adapter_ctx_t *ctx) {
+    if (ctx == NULL) {
+        return 1UL;
+    }
+    static const uint32_t FNV_OFFSET = 2166136261UL;
+    static const uint32_t FNV_PRIME  = 16777619UL;
+    uint32_t hval = FNV_OFFSET;
+    uint8_t manual_only = ((ctx->session_state == E_SESSION_EMPTY_MOUNT) ||
+                           (ctx->session_state == E_SESSION_PASSIVE_MOUNT)) ? 1U : 0U;
+    uint16_t wire_z_lid = ctx->z_primary_lens_id;
+    if ((ctx->identity_ready == 0U) && (manual_only == 0U)) {
+        wire_z_lid = PROVISIONAL_Z_LENS_ID;
+    }
+    uint8_t eff_apsc = ((ctx->is_apsc != 0U) && (ctx->v224.z_advertise_fx == 0U)) ? 1U : 0U;
+    uint8_t fmt_flags = (uint8_t)(((eff_apsc != 0U) ? 0x10U : 0U) |
+                                  ((ctx->is_macro != 0U) ? 0x04U : 0U));
+    uint8_t scale_n = (manual_only != 0U) ? 0U : ctx->af.scale_exp_n;
+    uint16_t eff_ver = (manual_only != 0U) ? 0U : ctx->e_lens_ver;
+    uint32_t words[9] = {
+        ((uint32_t)wire_z_lid << SHIFT_16) | (uint32_t)ctx->e_lens_id,
+        ((uint32_t)eff_ver << SHIFT_16) | ((uint32_t)fmt_flags << SHIFT_8) | (uint32_t)scale_n,
+        ((uint32_t)ctx->identity_ready << SHIFT_24) | ((uint32_t)manual_only << SHIFT_16),
+        ((uint32_t)ctx->f_min_mm << SHIFT_16) | (uint32_t)ctx->f_max_mm,
+        ((uint32_t)ctx->ap.c_open_wide << SHIFT_16) | (uint32_t)ctx->ap.c_open_tele,
+        ((uint32_t)ctx->vr.lens_has_ois << SHIFT_24) |
+            ((uint32_t)ctx->vr.z_vr_cap0 << SHIFT_8) | (uint32_t)ctx->vr.z_vr_cap1,
+        (uint32_t)ctx->brand,
+        hash_c11_identity(ctx),
+        (uint32_t)ctx->is_fisheye,
+    };
+    for (size_t idx = 0U; idx < (sizeof(words) / sizeof(words[0])); ++idx) {
+        hval = (hval ^ words[idx]) * FNV_PRIME;
+    }
+    return (hval == 0UL) ? 1UL : hval;
+}
+
 static void publish_static_snapshots_cached(adapter_ctx_t *ctx, z_fast_snapshots_t *dst,
                                             uint8_t bank_bit) {
     z_static_snap_cache_t *cache = &ctx->z_snap_cache;
     uint8_t manual_only = ((ctx->session_state == E_SESSION_EMPTY_MOUNT) ||
                            (ctx->session_state == E_SESSION_PASSIVE_MOUNT)) ? 1U : 0U;
-    uint8_t fmt_flags = (uint8_t)(((ctx->is_apsc != 0U) ? 0x10U : 0U) |
+    uint8_t eff_apsc = ((ctx->is_apsc != 0U) && (ctx->v224.z_advertise_fx == 0U)) ? 1U : 0U;
+    uint8_t fmt_flags = (uint8_t)(((eff_apsc != 0U) ? 0x10U : 0U) |
                                   ((ctx->is_macro != 0U) ? 0x04U : 0U));
     uint8_t scale_n = (manual_only != 0U) ? 0U : ctx->af.scale_exp_n;
     uint16_t eff_ver = (manual_only != 0U) ? 0U : ctx->e_lens_ver;
-    uint8_t dist_invalid = (ctx->dist_report_invalid != 0U) ? 1U : 0U;
+    uint8_t dist_invalid = z_dist_is_unknown(ctx) ? 1U : 0U;
     uint32_t c11_hash = hash_c11_identity(ctx);
 
     bool c10_match = (bool)((cache->c10_z_lid == ctx->z_primary_lens_id) &&
@@ -416,9 +476,10 @@ static void publish_static_snapshots_cached(adapter_ctx_t *ctx, z_fast_snapshots
         cache->c11_done_mask = (uint8_t)(cache->c11_done_mask | bank_bit);
     }
 
+    uint16_t f_int_cur = snapshot_focal_int_mm(ctx);
     bool c12_match = (bool)((cache->c12_open_w == ctx->ap.c_open_wide) &&
                             (cache->c12_open_t == ctx->ap.c_open_tele) &&
-                            (cache->c12_f_cur == ctx->f_cur_mm) &&
+                            (cache->c12_f_cur == f_int_cur) &&
                             (cache->c12_f_min == ctx->f_min_mm) &&
                             (cache->c12_f_max == ctx->f_max_mm) &&
                             (cache->c12_vr0 == ctx->vr.z_vr_cap0) &&
@@ -427,7 +488,7 @@ static void publish_static_snapshots_cached(adapter_ctx_t *ctx, z_fast_snapshots
     if (!c12_match) {
         cache->c12_open_w = ctx->ap.c_open_wide;
         cache->c12_open_t = ctx->ap.c_open_tele;
-        cache->c12_f_cur = ctx->f_cur_mm;
+        cache->c12_f_cur = f_int_cur;
         cache->c12_f_min = ctx->f_min_mm;
         cache->c12_f_max = ctx->f_max_mm;
         cache->c12_vr0 = ctx->vr.z_vr_cap0;
@@ -480,7 +541,14 @@ static void apply_sync_mosi_if_present(adapter_ctx_t *ctx, const optics_workspac
         z_snapshot_publish(ctx, optics);
     } else if (((req->cmd >= 0xC0U) && (req->cmd <= 0xC4U)) ||
                ((req->cmd >= 0xE0U) && (req->cmd <= 0xEFU))) {
+        int32_t prev_lz = ctx->af.mech_lz;
+        int32_t prev_hz = ctx->af.mech_hz;
+        int32_t prev_cz = ctx->af.cur_cz;
         af_servo_on_z_command(ctx, req->cmd, req->mosi_buf, req->mosi_len);
+        if ((ctx->af.mech_lz != prev_lz) || (ctx->af.mech_hz != prev_hz) ||
+            (ctx->af.cur_cz != prev_cz)) {
+            z_snapshot_publish(ctx, optics);
+        }
     }
 }
 
@@ -643,6 +711,26 @@ static void maybe_arm_wake_on_recog(adapter_ctx_t *ctx, uint8_t cmd) {
     }
 }
 
+static bool try_fill_c4_or_af_reply(const adapter_ctx_t *ctx, const z_fast_snapshots_t *snap,
+                                    const z_cmd_req_t *req, uint8_t *small_tx_buf,
+                                    size_t win_bytes) {
+    if ((req->cmd == 0xC4U) && (req->sub == 0x00U) && (win_bytes >= 22U)) {
+        memcpy(&small_tx_buf[1], &snap->cmd20_00[0x45], 16U);
+        memcpy(&small_tx_buf[17], &snap->cmd20_00[0x25], 2U);
+        small_tx_buf[19] = snap->cmd20_00[0x57];
+        small_tx_buf[20] = 0x00U;
+        boryoza_seal_z_frame(small_tx_buf, 22U);
+        return true;
+    }
+    if (((req->cmd == 0xC0U) || (req->cmd == 0xC1U) ||
+         (req->cmd == 0xECU) || (req->cmd == 0xEEU)) && (win_bytes >= 4U)) {
+        small_tx_buf[1] = ctx->v224.accepted_af_cookie;
+        boryoza_seal_z_frame(small_tx_buf, win_bytes);
+        return true;
+    }
+    return false;
+}
+
 static void fill_small_snapshot_window(adapter_ctx_t *ctx, const z_cmd_req_t *req,
                                        uint8_t *small_tx_buf, size_t win_bytes) {
     const z_fast_snapshots_t *snap = &ctx->z_banks[ctx->active_z_bank];
@@ -673,6 +761,8 @@ static void fill_small_snapshot_window(adapter_ctx_t *ctx, const z_cmd_req_t *re
         copy_and_seal_prefix(small_tx_buf, win_bytes, snap->cmd20_00, Z_CMD20_00_BYTES);
     } else if ((req->cmd == 0x20U) && (req->sub == 0x01U) && (win_bytes >= 2U)) {
         copy_and_seal_prefix(small_tx_buf, win_bytes, snap->cmd20_01, Z_CMD20_01_BYTES);
+    } else if (try_fill_c4_or_af_reply(ctx, snap, req, small_tx_buf, win_bytes)) {
+        return;
     } else {
         fill_aux_small_window(ctx, req, small_tx_buf, win_bytes);
     }
@@ -681,6 +771,9 @@ static void fill_small_snapshot_window(adapter_ctx_t *ctx, const z_cmd_req_t *re
 size_t z_dispatch_command_ram_safe(adapter_ctx_t *ctx, const optics_workspace_t *optics,
                                    const z_cmd_req_t *req, uint8_t *small_tx_buf,
                                    const uint8_t **out_direct_ptr) {
+    if (req->now_ticks != 0ULL) {
+        af_servo_note_wall_ticks(ctx, req->now_ticks);
+    }
     if (vr_controller_step(ctx, req->now_ticks)) {
         z_snapshot_publish(ctx, optics);
     }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone Host ASan/UBSan Closed-Loop SIL Verification Suite for NijiN SE-NZ V2.23.
+"""Standalone Host ASan/UBSan Closed-Loop SIL Verification Suite for NijiN SE-NZ V2.24.
 
 Exercises the compiled libboryoza_core shared library (.dylib/.so built from identical
 se-nz/src/02_core/*.c sources) purely through E-mount and Z-mount wire interfaces.
@@ -38,7 +38,17 @@ def _ensure_macos_asan_preloaded() -> None:
                 asan_rt = cand
                 break
     if asan_rt is not None and str(asan_rt) not in os.environ.get("DYLD_INSERT_LIBRARIES", ""):
-        real_py = Path(sys.exec_prefix) / "Resources/Python.app/Contents/MacOS/Python"
+        exec_pref = Path(sys.exec_prefix)
+        if str(exec_pref).startswith(("/Applications/Xcode.app", "/Library/Developer")):
+            for brew_opt in (Path("/opt/homebrew/opt"), Path("/usr/local/opt")):
+                cands = sorted(
+                    brew_opt.glob("python@3.*/Frameworks/Python.framework/Versions/3.*"),
+                    reverse=True,
+                )
+                if cands:
+                    exec_pref = cands[0]
+                    break
+        real_py = exec_pref / "Resources/Python.app/Contents/MacOS/Python"
         target_py = str(real_py) if real_py.is_file() else sys.executable
         env = dict(os.environ)
         prev = env.get("DYLD_INSERT_LIBRARIES", "")
@@ -118,6 +128,11 @@ def load_core_library() -> ctypes.CDLL:
         ctypes.c_void_p, ctypes.c_uint8, ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint64,
     ]
     lib.af_servo_emit_vsync_drive.argtypes = [ctypes.c_void_p]
+    lib.af_servo_set_parfocal_research_mode.argtypes = [ctypes.c_void_p, ctypes.c_uint8]
+    lib.af_servo_on_z_command.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint8, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t,
+    ]
+    lib.lens_session_apply_body_vsync_hz.argtypes = [ctypes.c_void_p, ctypes.c_uint8]
     lib.lens_db_unpack_spectral81.argtypes = [ctypes.c_int16, ctypes.POINTER(ctypes.c_uint8)]
     lib.lens_db_unpack_spectral81.restype = ctypes.c_bool
     lib.lens_db_lookup.argtypes = [ctypes.c_uint16]
@@ -421,11 +436,11 @@ class VarifocalPlant:
 
 
 def test_catalog_and_optics(lib: ctypes.CDLL) -> dict[str, Any]:
-    """Verify catalog lookup, 57 unpacked spectral curves, and 3D CMD 0x24 tables."""
+    """Verify catalog lookup, 58 unpacked spectral curves, and 3D CMD 0x24 tables."""
     out81 = (ctypes.c_uint8 * 81)()
-    for idx in range(57):
+    for idx in range(58):
         assert lib.lens_db_unpack_spectral81(idx, out81), f"Spectral unpack failed at idx={idx}"
-    for lid in (0x807B, 0xC56E, 0xC56F, 0xC13D):
+    for lid in (0x807B, 0xC56E, 0xC56F, 0xC13D, 0xC13A):
         assert lib.lens_db_lookup(lid), f"Missing catalog entry 0x{lid:04X}"
 
     core = CoreHarness(lib)
@@ -440,19 +455,37 @@ def test_catalog_and_optics(lib: ctypes.CDLL) -> dict[str, Any]:
     c12 = core.z_exchange(0x12, 0x00, 66)
     c24a = core.z_exchange(0x24, 0x00, 7426)
     c24b = core.z_exchange(0x24, 0x10, 3468)
-    assert (sum(c10) & 0xFF) == 0 and c10[3:7] == bytes([0x00, 0x00, 0x23, 0x02])
+    assert (sum(c10) & 0xFF) == 0 and c10[3:7] == bytes([0x00, 0x00, 0x24, 0x02])
     assert (sum(c11) & 0xFF) == 0 and b"50-150" in c11
     assert (sum(c12) & 0xFF) == 0 and struct.unpack_from("<H", c12, 0x2B)[0] == 50
     assert struct.unpack_from("<H", c12, 0x2F)[0] == 150
     assert (sum(c24a) & 0xFF) == 0 and (sum(c24b) & 0xFF) == 0
-    return {"spectral_checked": 57, "ver_token": c10[3:7].hex(), "cmd24_checksum_ok": True}
+    return {"spectral_checked": 58, "ver_token": c10[3:7].hex(), "cmd24_checksum_ok": True}
 
 
 def test_fulltime_parfocal_and_body_mf_e0(lib: ctypes.CDLL) -> dict[str, Any]:
-    """Verify full-time closed-loop parfocal across modes, Body-MF E0 brake, and b6=0 settle."""
+    """Verify V2.24 default-off idle parfocal causal delta, opt-in parfocal, and Body-MF E0 brake."""
+    # Production default: zero unsolicited 0x1D idle zoom trims
+    c_prod = CoreHarness(lib)
+    pl_prod = VarifocalPlant(f_mm=150.0, dist_m=1.96)
+    complete_mock_handshake(
+        c_prod, 0x807B, SONY_CAPS,
+        make_id05_108b(dist_x=pl_prod.dist_x, f_opt_0p1=pl_prod.f01, f_nom_0p1=pl_prod.f01),
+        make_id06_39b(pl_prod.focus_se, pl_prod.ei, pl_prod.en, zoom_norm=pl_prod.zn),
+    )
+    prod_trims = 0
+    for k in range(1, 16):
+        pl_prod.set_zoom(150.0 - 100.0 * (k / 15.0))
+        pl_prod.feed(c_prod)
+        d4_p = c_prod.build_id04()
+        prod_trims += int(len(d4_p) >= 24 and d4_p[19] == 0x1D)
+        pl_prod.apply_id04(d4_p)
+    assert prod_trims == 0, f"Production default emitted {prod_trims} idle parfocal 0x1D trims"
+
     mode_errs: dict[str, int] = {}
     for mode in ("afs", "body_mf", "barrel_mf"):
         core = CoreHarness(lib)
+        lib.af_servo_set_parfocal_research_mode(core.ctx, 1)
         is_mf = 1 if mode == "barrel_mf" else 0
         pl = VarifocalPlant(f_mm=150.0, dist_m=1.96, is_mf=is_mf)
         complete_mock_handshake(
@@ -528,8 +561,9 @@ def test_fulltime_parfocal_and_body_mf_e0(lib: ctypes.CDLL) -> dict[str, Any]:
             stalls += 1
     assert stalls == 0 and d4_i[9] == 0x81
 
-    # 0xC56F 120 Hz lag=4 zoom roundtrip + <=2 SE lim_far jitter keeping mech_lz == 0
+    # 0xC56F 120 Hz lag=4 zoom roundtrip (research opt-in) + <=2 SE lim_far jitter keeping mech_lz == 0
     c_6f = CoreHarness(lib)
+    lib.af_servo_set_parfocal_research_mode(c_6f.ctx, 1)
     spec_6f = (70.0, 200.0, 5672, 8106, 3200, 19600, 0.65, 1.00, 10.0)
     pl_6f = VarifocalPlant(f_mm=200.0, dist_m=2.0, dist_lag_frames=4, cam_spec=spec_6f)
     complete_mock_handshake(
@@ -575,7 +609,7 @@ def test_fulltime_parfocal_and_body_mf_e0(lib: ctypes.CDLL) -> dict[str, Any]:
 
 
 def test_c56e_af_default_and_ois_toggle(lib: ctypes.CDLL) -> dict[str, Any]:
-    """Verify slow-homing 0xC56E AF default gate and CMD 0xD2 OIS enablement."""
+    """Verify 0xC56E AF default, CMD 0xD2 OIS, zoom MF-bar suppression, and post-zoom 3D hotline."""
     core = CoreHarness(lib)
     complete_mock_handshake(
         core, 0xC56E, SIGMA_CAPS,
@@ -591,7 +625,73 @@ def test_c56e_af_default_and_ois_toggle(lib: ctypes.CDLL) -> dict[str, Any]:
     core.z_exchange(0xD2, 0x00, 4, mosi=seal_z_frame(bytearray([0x55, 0x02, 0x00, 0x00])))
     id03_on = core.build_id03()
     assert (id03_on[21] & 0x01) == 0x01 and struct.unpack_from("<H", id03_on, 19)[0] != 0x0033
-    return {"c56e_af_default_ok": True, "ois_d2_toggle_ok": True}
+
+    # 120 Hz barrel zoom must emit 0 false MF-bar triggers while real grp7 ring turn responds
+    lib.lens_session_apply_body_vsync_hz(core.ctx, 120)
+    _ = core.build_id04()
+    _ = core.build_id04()
+    pos, zn = 12000, 0x0100
+    for k in range(24):
+        core.ticks += 22_000
+        if (k % 2) == 1:
+            zn += 4
+        else:
+            pos += 8
+        f01 = 1500 + (zn - 0x0100) * 4500 // 0x3E00
+        core.feed_emount_frame(
+            1, 0x05,
+            make_id05_108b(dist_x=486, f_opt_0p1=f01, f_nom_0p1=f01, is_mf=0)
+            + b"\x06"
+            + make_id06_39b(pos, 9093, 24052, zoom_norm=zn, moving=2),
+        )
+        _ = core.build_id04()
+        assert core.build_hotline(k + 1)[21] == 0, f"False MF bar during zoom at frame {k}"
+
+    id05_ring = bytearray(make_id05_108b(dist_x=486, f_opt_0p1=1550, f_nom_0p1=1550, is_mf=0))
+    id05_ring[60] = 1
+    id05_ring[61] = 4
+    core.ticks += 22_000
+    core.feed_emount_frame(
+        1, 0x05,
+        bytes(id05_ring) + b"\x06" + make_id06_39b(pos + 20, 9093, 24052, zoom_norm=zn, moving=2),
+    )
+    _ = core.build_id04()
+    assert core.build_hotline(30)[21] != 0, "Real MF ring turn did not assert hotline MF flag"
+
+    # Post-zoom active 0xE6 3D-Tracking must decay zoom_guard and keep 500 Hz hotline interpolation
+    core.ticks += 25_000
+    core.feed_emount_frame(
+        1, 0x05,
+        make_id05_108b(dist_x=486, f_opt_0p1=6000, f_nom_0p1=6000, is_mf=0)
+        + b"\x06"
+        + make_id06_39b(12000, 2453, 24052, zoom_norm=0x3F00, moving=2),
+    )
+    mosi_e6 = (ctypes.c_uint8 * 10).from_buffer_copy(
+        struct.pack("<BiBBBBB", 0xE6, 20000, 0xFF, 0x3F, 0x00, 0x42, 0x00)
+    )
+    lib.af_servo_on_z_command(core.ctx, 0xE6, mosi_e6, 10)
+    pos_e6 = 12000
+    for _ in range(31):
+        pos_e6 += 80
+        core.ticks += 25_000
+        core.feed_emount_frame(
+            1, 0x05,
+            make_id05_108b(dist_x=486, f_opt_0p1=6000, f_nom_0p1=6000, is_mf=0)
+            + b"\x06"
+            + make_id06_39b(pos_e6, 2453, 24052, zoom_norm=0x3F00, moving=1),
+        )
+        _ = core.build_id04()
+    hot_t0 = struct.unpack_from("<i", core.build_hotline(40), 2)[0]
+    core.ticks += 9_500
+    hot_mid = struct.unpack_from("<i", core.build_hotline(41), 2)[0]
+    assert hot_mid > hot_t0, f"Post-zoom 0xE6 hotline failed to interpolate ({hot_t0} -> {hot_mid})"
+
+    return {
+        "c56e_af_default_ok": True,
+        "ois_d2_toggle_ok": True,
+        "zoom_mf_suppression_ok": True,
+        "post_zoom_e6_hotline_interp_ok": True,
+    }
 
 
 def main() -> int:
